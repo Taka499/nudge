@@ -1,0 +1,23 @@
+name = "nudge"
+main = "src/worker.ts"
+compatibility_date = "2026-09-01"
+
+# Instance configuration (plan decision A13). A self-hoster changes only this file and the
+# secrets: the code names no hostname, owner or channel. See docs/SETUP.md.
+#
+# Custom domain: Cloudflare creates and manages the DNS record when this deploys (the zone is in
+# the same account). Delete the `routes` line to serve from the workers.dev hostname instead.
+routes = [
+  { pattern = "nudge.tia.run", custom_domain = true }
+]
+
+[vars]
+# Repository owners (users or organisations) whose workflows this instance accepts, comma-separated.
+# Milestone 1 gate (A15); replaced by the GitHub App installation check in Milestone 2.
+ALLOWED_OWNERS = "Taka499,tia-tools"
+# Optional: the OIDC audience consumers must request. Defaults to this Worker's own origin,
+# e.g. https://nudge.tia.run, which is what the actions in actions/ request for the `endpoint` you give them.
+# NUDGE_AUDIENCE = "https://nudge.tia.run"
+
+# Secrets, set with `bunx wrangler secret put <NAME>` (never in this file):
+#   DISCORD_WEBHOOK_URL   the channel webhook that `notify` posts to

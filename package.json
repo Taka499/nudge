@@ -1,0 +1,17 @@
+{
+  "name": "nudge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test",
+    "type-check": "tsc --noEmit",
+    "deploy": "wrangler deploy",
+    "deploy:check": "wrangler deploy --dry-run --outdir \"${TMPDIR:-/tmp}/wrangler-out\""
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.136.2"
+  }
+}
