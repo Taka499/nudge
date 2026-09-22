@@ -12,7 +12,7 @@ Design confirmed by the user on 2026-09-22 in a grill-me session held in the `ga
 
 Automated workflows in the user's repositories increasingly do things without a person watching: `gakumas-supportcards` regenerates its card data every week and publishes it by itself, and `ss-assist` detects new game characters and opens a pull request with their data and icon. When such a run needs a human — a card it cannot score, a character whose icon must be looked at, a deploy token about to expire — the only channel today is GitHub email, which the user reads least. Nudge is a small Cloudflare Worker at `https://nudge.tia.run` that any of the user's GitHub Actions workflows can call to post a message into one private Discord channel, and, when the message asks a question, to carry Approve and Decline buttons. A tap on Approve does not merge anything: Nudge sends a `repository_dispatch` event back to the repository, and the repository's own committed workflow performs the action (`docs/adr/0001`). The repository then reports the outcome and Nudge edits the message to say merged, failed or declined.
 
-After this plan, the user sees every unattended run's outcome as a Discord push, approves a held card or a new character from the lock screen with one tap, and gets a reminder a month before a Cloudflare token expires, without any repository storing a secret for Nudge (`docs/adr/0002`).
+After this plan, the user sees every unattended run's outcome as a Discord push, approves a held card or a new character from the lock screen with one tap, and gets a reminder a month before a Cloudflare token expires, without any repository storing a secret for Nudge (`docs/adr/0002`). Nudge is also a self-hostable template (A12): the repository ships the Worker, the GitHub Actions that consumers call, and a setup guide, and `nudge.tia.run` is only the author's own instance; nothing in the code names it.
 
 
 ## Progress
@@ -20,10 +20,11 @@ After this plan, the user sees every unattended run's outcome as a Discord push,
 
 - [x] (2026-09-22) Design interview (grill-me, in `gakumas-supportcards`): decisions A1–A11 below; repository scaffolded from `Taka499/project-template@b52b8df`; ADRs 0001 and 0002 written.
 - [ ] User-side setup (see Concrete Steps § Before Milestone 1): Discord server, channel and webhook; the Cloudflare account-owned token for this Worker's own deploy.
-- [ ] Milestone 1: `notify`. OIDC verification, Discord webhook post, deploy workflow; `gakumas-supportcards` posts its weekly update outcomes and held-cards notices.
+- [ ] Milestone 1: `notify`. OIDC verification with the audience derived from the instance's own origin (A13), the allowed-owners gate (A15), Discord webhook post, deploy workflow; the `notify` composite action and the consumer README (A14, A16); the `v1` tag; `gakumas-supportcards` posts its weekly update outcomes and held-cards notices through the action.
 - [ ] User-side setup for Milestone 2: Discord application (public key, bot, interactions endpoint URL); GitHub App "Nudge" (private key, app id, installed on `tia-tools/gakumas-supportcards` and `Taka499/ss-assist`); a KV namespace; the Discord user-id allowlist.
-- [ ] Milestone 2: `request` and `resolve`. Buttons, the interactions endpoint with Ed25519 verification, request state in KV, the allowlist and tap rules, the GitHub App and `repository_dispatch`; `gakumas-supportcards` and `ss-assist` consume it.
-- [ ] Milestone 3: the reusable Cloudflare token-expiry workflow, called weekly by consuming repositories.
+- [ ] Milestone 2: `request` and `resolve`. Buttons, the interactions endpoint with Ed25519 verification, request state in KV, the allowlist and tap rules, the GitHub App and `repository_dispatch`; the installation check replaces the owner gate (A15); the `request`, `resolve` and `guard` composite actions (A14); `gakumas-supportcards` and `ss-assist` consume it.
+- [ ] Milestone 3: the reusable Cloudflare token-expiry workflow with an `endpoint` input (A14), called weekly by consuming repositories.
+- [ ] Milestone 4 (deferred, not scheduled): a hosted multi-tenant instance keyed per GitHub App installation. Listed so the door is visibly open; see A12 for why it is not planned.
 
 
 ## Surprises & Discoveries
@@ -86,6 +87,26 @@ After this plan, the user sees every unattended run's outcome as a Discord push,
   Rationale: The visible feature carries the risk (a credential and an interactions endpoint); the plain half carries most of the daily value and none of the risk.
   Date/Author: 2026-09-22 / user, choosing the agent's recommendation.
 
+- Decision (A12): Nudge is distributed as a self-hosted template: each user deploys their own Worker (on a `workers.dev` hostname or their own domain) from this repository and creates their own Discord application and GitHub App following the setup guide; `nudge.tia.run` is the author's instance and serves only the author's repositories. Rejected for now: a hosted multi-tenant service at one hostname (the author's Worker would become the trust boundary for other people's merges, weakening the argument of `docs/adr/0001`; it needs a per-tenant configuration surface, an uptime and abuse obligation from day one, Discord bot verification once the bot is in 100 servers, and a domain other than `tia.run`, which the user reserves for personal projects); an action that posts straight to a Discord webhook with no Worker (a secret per repository, which A3 rejected, and no buttons). The hosted model stays possible as a later configuration layer keyed per GitHub App installation (Milestone 4, deferred) provided A13 is kept.
+  Rationale: Everything the self-hosted model needs is already in Milestones 1–3, so the cost is discipline rather than new work, and each instance only ever touches its own owner's repositories.
+  Date/Author: 2026-09-23 / user, choosing the agent's recommendation.
+
+- Decision (A13): No tenant constant in code. The OIDC audience a consumer must request is the instance's own origin (`https://<worker hostname>`), which the Worker derives from the incoming request or from an explicit `NUDGE_AUDIENCE` variable; the Discord channel, webhook, allowed Discord user ids, GitHub App id and key, KV binding and allowed owners are `wrangler` variables and secrets. `docs/adr/0002` is amended accordingly: the audience is "the instance's own hostname", of which `nudge.tia.run` is one value.
+  Rationale: Costs nothing now and a migration later; it is the property that makes A12 true and Milestone 4 possible.
+  Date/Author: 2026-09-23 / user, choosing the agent's recommendation.
+
+- Decision (A14): The consumer interface is a set of composite actions in this repository — `actions/notify`, `actions/request`, `actions/resolve`, and `actions/guard` (which a consumer's `repository_dispatch` handler runs first to check the pull request's head against the dispatched commit and stop if they differ) — each taking an `endpoint` input, plus the reusable token-expiry workflow of A6 with the same input. Consumers reference them by tag (`Taka499/nudge/actions/notify@v1`); the tag moves only for compatible changes and a breaking change gets `v2`. Rejected: a hand-written step per consumer that fetches the OIDC token and posts JSON (the copy-that-drifts problem A6 rejected for the token check, applied to the main product).
+  Rationale: Installing Nudge in a repository becomes a few `uses:` lines; the OIDC token request and the HTTP contract exist once.
+  Date/Author: 2026-09-23 / user, choosing the agent's recommendation.
+
+- Decision (A15): A repository is registered with an instance by installing that instance's GitHub App on it; from Milestone 2 the Worker accepts a request only if the App has an installation covering the repository named in the OIDC claims, otherwise 403. Milestone 1 has no App yet and gates on an `ALLOWED_OWNERS` variable (repository owners, e.g. `Taka499,tia-tools`) instead. Rejected: no repository gate (OIDC proves the caller is a real GitHub Actions run, but any repository on GitHub can request a token for this audience and post into the channel).
+  Rationale: The install step and the security gate are the same action, so there is nothing extra to configure per consumer, and the open-channel gap is closed from the first milestone.
+  Date/Author: 2026-09-23 / user, choosing the agent's recommendation.
+
+- Decision (A16): The consumer-facing README and a setup guide (`docs/SETUP.md`) are deliverables of Milestone 1, extended in Milestone 2: the copy-paste consumer snippet, the HTTP contract, and the operator checklist (Discord application, GitHub App, KV, secrets and variables, deploy). The guide must say that GitHub App names are globally unique, so a self-hoster picks their own name rather than "Nudge".
+  Rationale: For a self-hosted template the guide is the install; a contract that lives only in this plan is not installable.
+  Date/Author: 2026-09-23 / user, choosing the agent's recommendation.
+
 
 ## Outcomes & Retrospective
 
@@ -108,19 +129,21 @@ The reference for a Worker that calls GitHub's API with a stored token and valid
 ## Plan of Work
 
 
-Milestone 1 builds `notify`. `src/worker.ts` routes `POST /notify`; `src/oidc.ts` verifies the bearer token (issuer `https://token.actions.githubusercontent.com`, audience `nudge.tia.run`, signature against the JWKS fetched from GitHub and cached, expiry) and returns the claims; `src/discord.ts` posts to the channel webhook a message whose first line is the repository name and a link to the run. Everything that decides — whether a token is acceptable, how a message is composed — is a pure function with tests; the fetches are at the edges. `.github/workflows/deploy.yml` deploys `main` after tests, following the gakumas-supportcards one. `gakumas-supportcards` then gains a final step in its update workflow that posts the outcome, and a `notify` when the held list is non-empty.
+Milestone 1 builds `notify`. `src/worker.ts` routes `POST /notify`; `src/oidc.ts` verifies the bearer token (issuer `https://token.actions.githubusercontent.com`, audience equal to the instance's own origin per A13, signature against the JWKS fetched from GitHub and cached, expiry) and returns the claims; the Worker then refuses with 403 any repository whose owner is not in `ALLOWED_OWNERS` (A15); `src/discord.ts` posts to the channel webhook a message whose first line is the repository name and a link to the run. Everything that decides — whether a token is acceptable, how a message is composed — is a pure function with tests; the fetches are at the edges. `.github/workflows/deploy.yml` deploys `main` after tests, following the gakumas-supportcards one. `actions/notify/action.yml` is a composite action that requests the OIDC token for the `endpoint` input's origin and posts the body (A14); the README and `docs/SETUP.md` carry the consumer snippet and the operator checklist (A16); the `v1` tag is created on the first release. `gakumas-supportcards` then gains a final step in its update workflow using `Taka499/nudge/actions/notify@v1` to post the outcome, and a `notify` when the held list is non-empty.
 
-Milestone 2 adds `POST /request` (same authentication; body with title, body text, optional URL, the commit, an optional image URL; the Worker posts a message with Approve and Decline buttons via the bot, stores `{repo, commit, run, createdAt, messageId, status}` in KV under a random id, returns the id), `POST /interactions` (verifies Discord's Ed25519 signature; answers PING; on a button press applies the tap rules of A5, acknowledges with a deferred update, mints an installation token for the repository through the GitHub App, sends `repository_dispatch` with `event_type` `nudge-approved` or `nudge-declined` and `client_payload {id, commit, actor}`, marks the request answered, and edits the message), and `POST /resolve` (authenticated like `notify`; marks the outcome and edits the message). Then the two consumers gain a workflow `on: repository_dispatch` that checks the pull request's head against the payload's commit and acts.
+Milestone 2 adds `POST /request` (same authentication; body with title, body text, optional URL, the commit, an optional image URL; the Worker posts a message with Approve and Decline buttons via the bot, stores `{repo, commit, run, createdAt, messageId, status}` in KV under a random id, returns the id), `POST /interactions` (verifies Discord's Ed25519 signature; answers PING; on a button press applies the tap rules of A5, acknowledges with a deferred update, mints an installation token for the repository through the GitHub App, sends `repository_dispatch` with `event_type` `nudge-approved` or `nudge-declined` and `client_payload {id, commit, actor}`, marks the request answered, and edits the message), and `POST /resolve` (authenticated like `notify`; marks the outcome and edits the message). The owner gate of Milestone 1 is replaced by the installation check (A15): the Worker lists the App's installations (cached) and refuses a repository the App is not installed on. `actions/request`, `actions/resolve` and `actions/guard` join `actions/notify` (A14), and the setup guide gains the Discord application and GitHub App sections. Then the two consumers gain a workflow `on: repository_dispatch` that runs `actions/guard` to check the pull request's head against the payload's commit and acts.
 
-Milestone 3 adds `.github/workflows/check-cloudflare-token.yml` with `on: workflow_call`, taking the token as a secret input, calling `GET https://api.cloudflare.com/client/v4/user/tokens/verify` (or the account-token equivalent) for the expiry, and posting a `notify` when it is within 30 days. `gakumas-supportcards` calls it weekly.
+Milestone 3 adds `.github/workflows/check-cloudflare-token.yml` with `on: workflow_call`, taking the token as a secret input, calling `GET https://api.cloudflare.com/client/v4/user/tokens/verify` (or the account-token equivalent) for the expiry, and posting a `notify` to the `endpoint` input when it is within 30 days (A14). `gakumas-supportcards` calls it weekly.
+
+Milestone 4 is deferred and not scheduled: a hosted instance serving several owners would key channel, allowlist and KV state per GitHub App installation. It is listed only so that Milestones 1–3 keep the properties (A13, A15) that make it a configuration layer rather than a rewrite.
 
 
 ## Concrete Steps
 
 
-Before Milestone 1, by the user: create a private Discord server (or a private channel in an existing one), add a webhook to the channel and copy its URL; in the tia-tools Cloudflare account create an account-owned API token for this Worker's deploy workflow (Editor on the Worker `nudge`, Workers Routes on `tia.run`); store `DISCORD_WEBHOOK_URL` as a Worker secret (`bunx wrangler secret put DISCORD_WEBHOOK_URL`) and the Cloudflare token and account id as repository secrets.
+Before Milestone 1, by the user: create a private Discord server (or a private channel in an existing one), add a webhook to the channel and copy its URL; in the tia-tools Cloudflare account create an account-owned API token for this Worker's deploy workflow (Editor on the Worker `nudge`, Workers Routes on `tia.run`); store `DISCORD_WEBHOOK_URL` as a Worker secret (`bunx wrangler secret put DISCORD_WEBHOOK_URL`), set `ALLOWED_OWNERS` (and `NUDGE_AUDIENCE` if the request origin is not to be trusted) as `wrangler` variables, and the Cloudflare token and account id as repository secrets.
 
-Before Milestone 2, by the user: in the Discord developer portal create an application "Nudge", copy its public key and application id, add a bot, invite it to the server with permission to send messages in the channel, and set the Interactions Endpoint URL to `https://nudge.tia.run/interactions` (Discord tests it with a PING at that moment, so Milestone 2's endpoint must be deployed first); under the `Taka499` account create a GitHub App "Nudge" with the repository permission Contents: read and write (needed for `repository_dispatch`), generate a private key, note the app id, and install it on `tia-tools/gakumas-supportcards` and `Taka499/ss-assist`; create a KV namespace; record the Discord user id(s) allowed to approve.
+Before Milestone 2, by the user: in the Discord developer portal create an application "Nudge", copy its public key and application id, add a bot, invite it to the server with permission to send messages in the channel, and set the Interactions Endpoint URL to `https://nudge.tia.run/interactions` (Discord tests it with a PING at that moment, so Milestone 2's endpoint must be deployed first); under the `Taka499` account create a GitHub App "Nudge" (App names are unique across GitHub; a self-hoster picks another name, A16) with the repository permission Contents: read and write (needed for `repository_dispatch`), generate a private key, note the app id, and install it on `tia-tools/gakumas-supportcards` and `Taka499/ss-assist`; create a KV namespace; record the Discord user id(s) allowed to approve.
 
 Commands, to be filled in with real transcripts as milestones run:
 
@@ -133,9 +156,9 @@ Commands, to be filled in with real transcripts as milestones run:
 ## Validation and Acceptance
 
 
-Milestone 1 is accepted when a manual run of a workflow in `gakumas-supportcards` produces a message in the Discord channel that names the repository and links to the run, and when the same request replayed with a token for a different audience, an expired token, or no token is refused with 401 and produces no message.
+Milestone 1 is accepted when a manual run of a workflow in `gakumas-supportcards` produces a message in the Discord channel that names the repository and links to the run, and when the same request replayed with a token for a different audience, an expired token, or no token is refused with 401 and produces no message; a valid token from a repository whose owner is not in `ALLOWED_OWNERS` is refused with 403 and produces no message; and `gakumas-supportcards` reaches the endpoint through `actions/notify@v1`, not a hand-written step. Self-hosting is accepted when a second Worker deployed from the same commit onto a `workers.dev` hostname, with its own variables and a different audience, accepts a consumer that names it as `endpoint` and refuses one that carries a token for `nudge.tia.run`; this is the test that no tenant constant leaked into the code (A13).
 
-Milestone 2 is accepted when a request from `gakumas-supportcards` shows Approve and Decline buttons in Discord; a tap by the allowlisted user starts the repository's dispatch workflow, which merges the named pull request and reports back, after which the message shows "merged" and the buttons are gone; a second tap on the same message changes nothing; a tap from a non-allowlisted account is ignored; and a request older than 7 days is answered as expired.
+Milestone 2 is accepted when a request from `gakumas-supportcards` shows Approve and Decline buttons in Discord; a tap by the allowlisted user starts the repository's dispatch workflow, which merges the named pull request and reports back, after which the message shows "merged" and the buttons are gone; a second tap on the same message changes nothing; a tap from a non-allowlisted account is ignored; and a request older than 7 days is answered as expired. A valid token from a repository the GitHub App is not installed on is refused with 403 (A15), and a dispatch whose commit no longer matches the pull request's head is stopped by `actions/guard` before anything acts.
 
 Milestone 3 is accepted when a consuming repository's weekly call posts nothing for a token more than 30 days from expiry and posts a warning naming the repository and the date for one within 30 days.
 
@@ -157,7 +180,7 @@ The design interview of 2026-09-22 is transcribed into the Decision Log above; t
 
 Runtime: Bun for tests and scripts, `wrangler` for deployment, TypeScript. No framework. The Discord and GitHub calls use `fetch` directly.
 
-Consumer contract, all requests `Content-Type: application/json` with `Authorization: Bearer <GitHub OIDC token, audience nudge.tia.run>`:
+Consumer contract, all requests `Content-Type: application/json` with `Authorization: Bearer <GitHub OIDC token, audience = the instance's origin, e.g. https://nudge.tia.run>` (A13); a repository not covered by `ALLOWED_OWNERS` (Milestone 1) or by an installation of the instance's GitHub App (Milestone 2 on) receives 403 (A15):
 
     POST /notify   { title: string, body: string, url?: string }                       -> 204
     POST /request  { title: string, body: string, url?: string, commit: string, image?: string }  -> 201 { id: string }
@@ -165,6 +188,17 @@ Consumer contract, all requests `Content-Type: application/json` with `Authoriza
     POST /interactions   (Discord only; Ed25519-signed)
 
 Dispatch to the consumer: `event_type` `nudge-approved` or `nudge-declined`, `client_payload` `{ id, commit, actor }` where `actor` is the Discord user id that tapped.
+
+Composite actions (A14), referenced as `Taka499/nudge/actions/<name>@v1`; every one takes `endpoint` (the instance origin) and requests the OIDC token itself, so the calling job needs `permissions: id-token: write`:
+
+    actions/notify    inputs: endpoint, title, body, url?
+    actions/request   inputs: endpoint, title, body, url?, commit, image?      outputs: id
+    actions/resolve   inputs: endpoint, id, outcome, detail?
+    actions/guard     inputs: commit (from client_payload), pull-request        fails the job when the head differs
+
+Reusable workflow `.github/workflows/check-cloudflare-token.yml`: `on: workflow_call` with input `endpoint` and secret `cloudflare-token`.
+
+Instance configuration (`wrangler.toml` variables and secrets, A13): `NUDGE_AUDIENCE?`, `ALLOWED_OWNERS` (Milestone 1), `DISCORD_WEBHOOK_URL`, and from Milestone 2 `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN`, `DISCORD_CHANNEL_ID`, `DISCORD_ALLOWED_USERS`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, and the KV binding `REQUESTS`.
 
 In `src/oidc.ts`:
 
@@ -178,3 +212,4 @@ In `src/discord.ts`, pure message builders `notifyMessage(identity, input)` and 
 
 
 - 2026-09-22: Created at scaffold time from the grill-me session's decisions A1–A11 and the facts gathered before it.
+- 2026-09-23: Decisions A12–A16 (self-hosted distribution, no tenant constant, composite actions, registration by App installation, setup guide) after a review of the roadmap against future install and distribution; Milestones 1–3 amended, Milestone 4 listed as deferred, acceptance and interfaces extended, `docs/adr/0002` amended.
