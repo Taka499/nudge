@@ -20,6 +20,7 @@ After this plan, the user sees every unattended run's outcome as a Discord push,
 
 - [x] (2026-09-22) Design interview (grill-me, in `gakumas-supportcards`): decisions A1–A11 below; repository scaffolded from `Taka499/project-template@b52b8df`; ADRs 0001 and 0002 written.
 - [ ] User-side setup (see Concrete Steps § Before Milestone 1): Discord server, channel and webhook; the Cloudflare account-owned token for this Worker's own deploy.
+- [~] (2026-09-23) Milestone 1 code complete on branch `feature/m1-notify`, awaiting the user-side setup and the first deploy: `src/` (oidc, jwks, gate, validate, discord, worker) with 48 tests across 6 files, `actions/notify`, `.github/workflows/{ci,deploy}.yml`, `README.md`, `docs/SETUP.md`, `wrangler.toml`; `bun test`, `bun run type-check` and `bun run deploy:check` pass; eight mutations each turned the suite red.
 - [ ] Milestone 1: `notify`. OIDC verification with the audience derived from the instance's own origin (A13), the allowed-owners gate (A15), Discord webhook post, deploy workflow; the `notify` composite action and the consumer README (A14, A16); the `v1` tag; `gakumas-supportcards` posts its weekly update outcomes and held-cards notices through the action.
 - [ ] User-side setup for Milestone 2: Discord application (public key, bot, interactions endpoint URL); GitHub App "Nudge" (private key, app id, installed on `tia-tools/gakumas-supportcards` and `Taka499/ss-assist`); a KV namespace; the Discord user-id allowlist.
 - [ ] Milestone 2: `request` and `resolve`. Buttons, the interactions endpoint with Ed25519 verification, request state in KV, the allowlist and tap rules, the GitHub App and `repository_dispatch`; the installation check replaces the owner gate (A15); the `request`, `resolve` and `guard` composite actions (A14); `gakumas-supportcards` and `ss-assist` consume it.
@@ -38,6 +39,9 @@ After this plan, the user sees every unattended run's outcome as a Discord push,
 
 - Observation: ss-assist today has two human checkpoints — reviewing the bot's pull request into `develop` (faction, icon, localised names) and merging the automatic promotion pull request into `main`, which deploys — while `gakumas-supportcards` merges its own routine update and leaves a pull request open only when the merge is refused. Nudge must serve both shapes, which is why the action on Approve belongs to the repository (A1) and not to Nudge.
   Evidence: `ss-assist/.github/workflows/{auto-character,promote-to-main}.yml` and `gakumas-supportcards/.github/workflows/update-data.yml`, read 2026-09-22.
+
+- Observation: With `@types/bun` 1.4 and TypeScript 7, `typeof fetch` includes a `preconnect` member, so a test fake cannot satisfy it; and `Uint8Array.from(...)` is typed `Uint8Array<ArrayBufferLike>`, which `crypto.subtle.verify` refuses as a `BufferSource`. The code defines its own one-method `Fetcher` type (`src/fetcher.ts`) and builds byte arrays over an explicit `ArrayBuffer`.
+  Evidence: `bunx tsc --noEmit` on 2026-09-23 while writing Milestone 1; both errors disappeared with those two changes.
 
 
 ## Decision Log
@@ -145,12 +149,12 @@ Before Milestone 1, by the user: create a private Discord server (or a private c
 
 Before Milestone 2, by the user: in the Discord developer portal create an application "Nudge", copy its public key and application id, add a bot, invite it to the server with permission to send messages in the channel, and set the Interactions Endpoint URL to `https://nudge.tia.run/interactions` (Discord tests it with a PING at that moment, so Milestone 2's endpoint must be deployed first); under the `Taka499` account create a GitHub App "Nudge" (App names are unique across GitHub; a self-hoster picks another name, A16) with the repository permission Contents: read and write (needed for `repository_dispatch`), generate a private key, note the app id, and install it on `tia-tools/gakumas-supportcards` and `Taka499/ss-assist`; create a KV namespace; record the Discord user id(s) allowed to approve.
 
-Commands, to be filled in with real transcripts as milestones run:
+Commands, as run on 2026-09-23 for Milestone 1 (transcripts abridged):
 
-    bun install
-    bun test
-    bun run type-check
-    bunx wrangler deploy --dry-run --outdir "$TMPDIR/wrangler-out"
+    bun add -d typescript @types/bun wrangler    # typescript 7.0.2, @types/bun 1.4.2, wrangler 4.136.2
+    bun test                                     # 48 pass, 0 fail, 184 expect() calls, 6 files
+    bun run type-check                           # clean
+    bun run deploy:check                         # wrangler deploy --dry-run --outdir "$TMPDIR/wrangler-out"; 11.97 KiB, one binding ALLOWED_OWNERS
 
 
 ## Validation and Acceptance
