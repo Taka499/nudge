@@ -59,6 +59,7 @@ Titles longer than 256 characters and bodies longer than 4096 are truncated with
 bun install
 bun test               # every rule is a pure function with tests; the Worker is driven end to end with self-signed tokens
 bun run type-check
+bun run lint           # Oxlint + tsgolint: size, complexity and type-escape rules are errors; exceptions live in oxlint.config.ts only
 bun run deploy:check   # wrangler dry run: builds the Worker without an account
 ```
 

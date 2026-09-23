@@ -35,15 +35,16 @@ One Cloudflare Worker (`src/worker.ts`, entry `handle(request, env, deps)`) plus
 
 ## Setup and Development
 
-`bun install` (Bun 1.3.5, the version the workflows pin). Deploying needs a Cloudflare login or the `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` secrets, and the Worker secret `DISCORD_WEBHOOK_URL`; the full operator checklist is `docs/SETUP.md`. The Worker is deployed by `.github/workflows/deploy.yml` on push to `main`; `.github/workflows/ci.yml` runs the checks on pull requests.
+`bun install` (Bun 1.3.5, the version the workflows pin; TypeScript 7, see Build and Test). Deploying needs a Cloudflare login or the `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` secrets, and the Worker secret `DISCORD_WEBHOOK_URL`; the full operator checklist is `docs/SETUP.md`. The Worker is deployed by `.github/workflows/deploy.yml` on push to `main`; `.github/workflows/ci.yml` runs the checks on pull requests.
 
 ## Build and Test
 
     bun test                # unit tests; the Worker is driven end to end with RSA keys the tests generate (src/testing/oidc-fixture.ts)
     bun run type-check      # tsc --noEmit, strict with noUncheckedIndexedAccess
+    bun run lint            # oxlint + tsgolint: size/complexity limits and type escape hatches are errors (oxlint.config.ts)
     bun run deploy:check    # wrangler deploy --dry-run: builds the Worker, needs no account
 
-A clean run prints `48 pass, 0 fail` (Milestone 1), no type errors, and wrangler's binding table ending in `--dry-run: exiting now.` A new test must be shown to fail against a broken target before it counts (user-level `docs/testing.md`); the Milestone 1 suite was checked with eight mutations.
+A clean run prints `48 pass, 0 fail` (Milestone 1), no type errors, no lint output, and wrangler's binding table ending in `--dry-run: exiting now.` Lint exceptions live only in `oxlint.config.ts`, each with its reason and removal condition; never inline. The repo is on TypeScript 7 and lints with Oxlint and tsgolint, because typescript-eslint and eslint-plugin-sonarjs need the compiler JavaScript API that the TypeScript 7 npm package does not ship (per `docs/plans/EXECPLAN_NUDGE.md` decision A17). If a bun install hangs at "Resolving dependencies", point `BUN_INSTALL_CACHE_DIR` at an empty directory: an interrupted install leaves the cache in a state bun waits on forever (plan § Surprises). A new test must be shown to fail against a broken target before it counts (user-level `docs/testing.md`); the Milestone 1 suite was checked with eight mutations.
 
 ## Code Style
 

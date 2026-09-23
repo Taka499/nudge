@@ -33,7 +33,7 @@ describe("parseNotifyInput", () => {
   });
 
   test("refuses a url that is not http(s)", () => {
-    for (const url of ["", "github.com/x", "javascript:alert(1)", "ftp://x", 1, null]) {
+    for (const url of ["", "github.com/x", "javascript:alert(1)", "ftps://x", "mailto:x@y.test", 1, null]) {
       expect(parseNotifyInput({ title: "t", body: "b", url })).toEqual({ ok: false, error: "url must be an http(s) URL" });
     }
   });

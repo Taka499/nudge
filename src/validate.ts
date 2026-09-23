@@ -20,9 +20,9 @@ export function parseNotifyInput(raw: unknown): Parsed<NotifyInput> {
   const body = nonEmptyString(record["body"]);
   if (body === undefined) return fail("body must be a non-empty string");
   const url = record["url"];
-  if (url === undefined) return { ok: true, value: { title, body } };
+  if (url === undefined) return ok({ title, body });
   if (typeof url !== "string" || !isHttpUrl(url)) return fail("url must be an http(s) URL");
-  return { ok: true, value: { title, body, url } };
+  return ok({ title, body, url });
 }
 
 function nonEmptyString(value: unknown): string | undefined {
@@ -42,6 +42,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function fail(error: string): Parsed<never> {
+function ok(value: NotifyInput): Parsed<NotifyInput> {
+  return { ok: true, value };
+}
+
+function fail(error: string): Parsed<NotifyInput> {
   return { ok: false, error };
 }

@@ -104,7 +104,7 @@ function checkStandardClaims(claims: Record<string, unknown>, audience: string, 
 
 function audienceMatches(aud: unknown, expected: string): boolean {
   if (typeof aud === "string") return aud === expected;
-  return Array.isArray(aud) && aud.includes(expected);
+  return Array.isArray(aud) && aud.some((entry: unknown) => entry === expected);
 }
 
 function identityFrom(claims: Record<string, unknown>): WorkflowIdentity {

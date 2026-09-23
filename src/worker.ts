@@ -45,7 +45,7 @@ async function notify(request: Request, env: Env, deps: Deps): Promise<Response>
 
   const body = await readJsonBody(request);
   if (body instanceof Response) return body;
-  const input = parseNotifyInput(body);
+  const input = parseNotifyInput(body.json);
   if (!input.ok) return json(400, { error: input.error });
 
   if (!env.DISCORD_WEBHOOK_URL) return json(500, { error: "instance has no DISCORD_WEBHOOK_URL" });
@@ -85,7 +85,7 @@ export function bearerToken(header: string | null): string | undefined {
   return match?.[1];
 }
 
-async function readJsonBody(request: Request): Promise<unknown | Response> {
+async function readJsonBody(request: Request): Promise<{ json: unknown } | Response> {
   const declared = Number(request.headers.get("Content-Length") ?? "0");
   if (declared > MAX_BODY_BYTES) return json(413, { error: `body larger than ${MAX_BODY_BYTES} bytes` });
   if (!/^application\/json\b/i.test(request.headers.get("Content-Type") ?? "")) {
@@ -94,8 +94,8 @@ async function readJsonBody(request: Request): Promise<unknown | Response> {
   const text = await request.text();
   if (text.length > MAX_BODY_BYTES) return json(413, { error: `body larger than ${MAX_BODY_BYTES} bytes` });
   try {
-    const parsed: unknown = JSON.parse(text);
-    return parsed;
+    const json: unknown = JSON.parse(text);
+    return { json };
   } catch {
     return json(400, { error: "body is not valid JSON" });
   }

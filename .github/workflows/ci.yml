@@ -1,4 +1,4 @@
-# Guards: every pull request. Refuses a merge when the unit tests or the type check fail, or when
+# Guards: every pull request. Refuses a merge when the unit tests, the type check or the lint fail, or when
 # wrangler cannot build the Worker from wrangler.toml (a dry run, no account needed).
 name: CI
 
@@ -21,4 +21,5 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun test
       - run: bun run type-check
+      - run: bun run lint
       - run: bun run deploy:check

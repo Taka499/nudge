@@ -1,5 +1,5 @@
 # Guards: production. This is the only path by which the Worker at the instance hostname changes.
-# It deploys `main` and refuses to when the unit tests or the type check fail. `main` is production;
+# It deploys `main` and refuses to when the unit tests, the type check or the lint fail. `main` is production;
 # unfinished work lives on feature branches (Git-flow, per CLAUDE.md § Commit Discipline).
 name: Deploy
 
@@ -34,6 +34,7 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun test
       - run: bun run type-check
+      - run: bun run lint
       - name: Deploy the Worker
         run: bunx wrangler deploy
         env:

@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { JWKS_TTL_MS, createJwksSource, parseJwks } from "./jwks.ts";
+import { requestUrl } from "./testing/http.ts";
 
 function fakeFetch(bodies: unknown[], status = 200): { fetcher: (input: string | URL | Request) => Promise<Response>; calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
     fetcher: async (input) => {
-      calls.push(String(input));
+      calls.push(requestUrl(input));
       const body = bodies[Math.min(calls.length, bodies.length) - 1];
       return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
     },
@@ -45,8 +46,11 @@ describe("createJwksSource", () => {
   test("an error response throws and leaves nothing cached", async () => {
     const { fetcher, calls } = fakeFetch([{}], 503);
     const jwks = createJwksSource(fetcher);
-    await expect(jwks(t0)).rejects.toThrow("JWKS fetch failed: 503");
-    await expect(jwks(t0)).rejects.toThrow();
+    const first = await jwks(t0).catch((e: unknown) => e);
+    expect(first).toBeInstanceOf(Error);
+    if (first instanceof Error) expect(first.message).toBe("JWKS fetch failed: 503");
+    const second = await jwks(t0).catch((e: unknown) => e);
+    expect(second).toBeInstanceOf(Error);
     expect(calls).toHaveLength(2);
   });
 });

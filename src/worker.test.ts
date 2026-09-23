@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { createJwksSource } from "./jwks.ts";
 import { GITHUB_JWKS_URL, type JsonWebKeySet } from "./oidc.ts";
+import { bodyText, requestUrl } from "./testing/http.ts";
 import { AUDIENCE, NOW, createSigner, mint, standardClaims, type Signer } from "./testing/oidc-fixture.ts";
 import { MAX_BODY_BYTES, bearerToken, handle, type Deps, type Env } from "./worker.ts";
 
@@ -21,13 +22,13 @@ interface World {
 function world(options: { jwks?: () => JsonWebKeySet; webhookStatus?: number } = {}): World {
   const w: World = { jwksFetches: 0, posted: [], deps: { fetch: async () => new Response(null), now: () => NOW, jwks: async () => ({ keys: [] }) } };
   const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const url = String(input);
+    const url = requestUrl(input);
     if (url === GITHUB_JWKS_URL) {
       w.jwksFetches += 1;
       return Response.json((options.jwks ?? (() => signer.jwks))());
     }
     if (url === WEBHOOK) {
-      w.posted.push(JSON.parse(String(init?.body)));
+      w.posted.push(JSON.parse(bodyText(init)));
       return new Response(null, { status: options.webhookStatus ?? 204 });
     }
     throw new Error(`unexpected fetch ${url}`);
@@ -36,10 +37,11 @@ function world(options: { jwks?: () => JsonWebKeySet; webhookStatus?: number } =
   return w;
 }
 
-function post(token: string | undefined, body: unknown, extra: { url?: string; contentType?: string | null; raw?: string } = {}): Request {
+/** `contentType: ""` sends no Content-Type header at all. */
+function post(token: string | undefined, body: unknown, extra: { url?: string; contentType?: string; raw?: string } = {}): Request {
   const headers = new Headers();
   if (token !== undefined) headers.set("Authorization", `Bearer ${token}`);
-  if (extra.contentType !== null) headers.set("Content-Type", extra.contentType ?? "application/json");
+  if (extra.contentType !== "") headers.set("Content-Type", extra.contentType ?? "application/json");
   return new Request(extra.url ?? `${AUDIENCE}/notify`, { method: "POST", headers, body: extra.raw ?? JSON.stringify(body) });
 }
 
@@ -102,7 +104,7 @@ describe("POST /notify", () => {
     expect((await handle(post(token, { title: "t" }), ENV, w.deps)).status).toBe(400);
     expect((await handle(post(token, undefined, { raw: "{not json" }), ENV, w.deps)).status).toBe(400);
     expect((await handle(post(token, INPUT, { contentType: "text/plain" }), ENV, w.deps)).status).toBe(415);
-    expect((await handle(post(token, INPUT, { contentType: null }), ENV, w.deps)).status).toBe(415);
+    expect((await handle(post(token, INPUT, { contentType: "" }), ENV, w.deps)).status).toBe(415);
     expect((await handle(post(token, { ...INPUT, body: "x".repeat(MAX_BODY_BYTES) }), ENV, w.deps)).status).toBe(413);
     expect((await handle(post(token, INPUT, { contentType: "application/json; charset=utf-8" }), ENV, w.deps)).status).toBe(204);
     expect(w.posted).toHaveLength(1);

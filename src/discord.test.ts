@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DiscordError, EMBED_LIMITS, notifyMessage, postWebhook, shortRef, truncate } from "./discord.ts";
 import type { WorkflowIdentity } from "./oidc.ts";
+import { bodyText, requestUrl } from "./testing/http.ts";
 import { NOW, SHA } from "./testing/oidc-fixture.ts";
 
 const identity: WorkflowIdentity = {
@@ -76,13 +77,13 @@ describe("postWebhook", () => {
   test("posts the message as JSON", async () => {
     const seen: { url: string; init?: RequestInit }[] = [];
     await postWebhook("https://discord.test/hook", message, async (url, init) => {
-      seen.push({ url: String(url), init });
+      seen.push({ url: requestUrl(url), init });
       return new Response(null, { status: 204 });
     });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.url).toBe("https://discord.test/hook");
     expect(seen[0]?.init?.method).toBe("POST");
-    expect(JSON.parse(String(seen[0]?.init?.body))).toEqual(message);
+    expect(JSON.parse(bodyText(seen[0]?.init))).toEqual(message);
   });
 
   test("a non-2xx answer throws with the status", async () => {

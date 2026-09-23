@@ -20,7 +20,7 @@ After this plan, the user sees every unattended run's outcome as a Discord push,
 
 - [x] (2026-09-22) Design interview (grill-me, in `gakumas-supportcards`): decisions A1–A11 below; repository scaffolded from `Taka499/project-template@b52b8df`; ADRs 0001 and 0002 written.
 - [ ] User-side setup (see Concrete Steps § Before Milestone 1): Discord server, channel and webhook; the Cloudflare account-owned token for this Worker's own deploy.
-- [~] (2026-09-23) Milestone 1 code complete on branch `feature/m1-notify`, awaiting the user-side setup and the first deploy: `src/` (oidc, jwks, gate, validate, discord, worker) with 48 tests across 6 files, `actions/notify`, `.github/workflows/{ci,deploy}.yml`, `README.md`, `docs/SETUP.md`, `wrangler.toml`; `bun test`, `bun run type-check` and `bun run deploy:check` pass; eight mutations each turned the suite red.
+- [~] (2026-09-23) Milestone 1 code complete on branch `feature/m1-notify`, awaiting the user-side setup and the first deploy: `src/` (oidc, jwks, gate, validate, discord, worker) with 48 tests across 6 files, `actions/notify`, `.github/workflows/{ci,deploy}.yml`, `README.md`, `docs/SETUP.md`, `wrangler.toml`; `bun test`, `bun run type-check`, `bun run lint` and `bun run deploy:check` pass; eight mutations each turned the suite red. Commits `6cec804`…`ceb790c` plus the lint gate on TypeScript 7 and Oxlint (A17).
 - [ ] Milestone 1: `notify`. OIDC verification with the audience derived from the instance's own origin (A13), the allowed-owners gate (A15), Discord webhook post, deploy workflow; the `notify` composite action and the consumer README (A14, A16); the `v1` tag; `gakumas-supportcards` posts its weekly update outcomes and held-cards notices through the action.
 - [ ] User-side setup for Milestone 2: Discord application (public key, bot, interactions endpoint URL); GitHub App "Nudge" (private key, app id, installed on `tia-tools/gakumas-supportcards` and `Taka499/ss-assist`); a KV namespace; the Discord user-id allowlist.
 - [ ] Milestone 2: `request` and `resolve`. Buttons, the interactions endpoint with Ed25519 verification, request state in KV, the allowlist and tap rules, the GitHub App and `repository_dispatch`; the installation check replaces the owner gate (A15); the `request`, `resolve` and `guard` composite actions (A14); `gakumas-supportcards` and `ss-assist` consume it.
@@ -42,6 +42,15 @@ After this plan, the user sees every unattended run's outcome as a Discord push,
 
 - Observation: With `@types/bun` 1.4 and TypeScript 7, `typeof fetch` includes a `preconnect` member, so a test fake cannot satisfy it; and `Uint8Array.from(...)` is typed `Uint8Array<ArrayBufferLike>`, which `crypto.subtle.verify` refuses as a `BufferSource`. The code defines its own one-method `Fetcher` type (`src/fetcher.ts`) and builds byte arrays over an explicit `ArrayBuffer`.
   Evidence: `bunx tsc --noEmit` on 2026-09-23 while writing Milestone 1; both errors disappeared with those two changes.
+
+- Observation: The `typescript@7` npm package is the native (Go) compiler: `require("typescript")` exposes only the version, no `TypeFlags`, no program API, and typescript-eslint declares `typescript >=4.8.4 <6.1.0`. A project that lints with typescript-eslint must therefore pin TypeScript 5.x; this one pins `^5.9` and type-checks with it too. Also: sonarjs 4.2.1's `null-dereference` reports parameters typed plain `string`, and eslint-plugin-security's `detect-object-injection` and `detect-possible-timing-attacks` fire on `bytes[i]` and on `token !== undefined`; all three are off in `eslint.config.js` with their removal conditions.
+  Evidence: `bun run lint` on 2026-09-23 — `TypeError: Cannot read properties of undefined (reading 'Intrinsic')` from `ts-api-utils` under TypeScript 7.0.2; 25 findings on the first run under 5.9.3, of which 11 were those false positives and 14 were fixed in code. Superseded the same day by decision A17: the repo moved to TypeScript 7 with Oxlint; the 14 code fixes stayed.
+
+- Observation: Oxlint 1.85 with oxlint-tsgolint 7.0.2002 runs every type-aware rule the ESLint gate used (`no-floating-promises`, `no-misused-promises`, `await-thenable`, `no-base-to-string`) under TypeScript 7, plus the size limits and `eslint-plugin-security` loaded as a JS plugin. `eslint-plugin-sonarjs` cannot load as a JS plugin either (same `ts-api-utils` crash), Oxlint has no built-in cognitive-complexity rule, and its `jest/expect-expect` does not recognise `bun:test`. Oxlint's JSON config refuses unknown keys, so comments need `oxlint.config.ts`. On this repo Oxlint took 0.18 s against ESLint's 1.9 s, and it found one issue ESLint missed: `readJsonBody` returned `Promise<unknown | Response>`, a union in which `unknown` swallows `Response`; it now returns `{ json: unknown } | Response`.
+  Evidence: a trial in a scratch copy on 2026-09-23 with seven injected violations, each reported; then the same in this repository.
+
+- Observation: bun 1.3.5 can hang forever at "Resolving dependencies" after an earlier install was interrupted: it gets `304 Not Modified` for the package manifest and makes no further request. An empty `BUN_INSTALL_CACHE_DIR` fixes it. macOS has no `timeout` command, so a `timeout N bun …` guard silently runs nothing; `perl -e 'alarm N; exec @ARGV' …` works.
+  Evidence: `bun add --verbose` log on 2026-09-23, three hangs, each cured by a fresh cache directory.
 
 
 ## Decision Log
@@ -111,6 +120,10 @@ After this plan, the user sees every unattended run's outcome as a Discord push,
   Rationale: For a self-hosted template the guide is the install; a contract that lives only in this plan is not installable.
   Date/Author: 2026-09-23 / user, choosing the agent's recommendation.
 
+- Decision (A17): TypeScript 7 with Oxlint and oxlint-tsgolint as the lint gate, configured in `oxlint.config.ts`. Kept from the ESLint gate: size and nesting limits, the type escape hatches (`any`, non-null assertions, `as` casts) as errors, the four type-aware rules, empty catch blocks, and `eslint-plugin-security` as a JS plugin. Lost: sonarjs `cognitive-complexity`, compensated by lowering cyclomatic `complexity` from 20 to 15; and `assertions-in-tests`, covered by the rule that every new test is first seen to fail. Rejected: TypeScript 6.0 with the full ESLint gate (keeps every rule, but pins the repository to the last JavaScript-API compiler and faces this choice again later).
+  Rationale: The current compiler and a gate about ten times faster outweigh two rules that were the least load-bearing in the set; sonarjs cannot run under TypeScript 7 in either linter, so no TypeScript 7 option keeps it.
+  Date/Author: 2026-09-23 / user, choosing the agent's recommendation.
+
 
 ## Outcomes & Retrospective
 
@@ -154,6 +167,12 @@ Commands, as run on 2026-09-23 for Milestone 1 (transcripts abridged):
     bun add -d typescript @types/bun wrangler    # typescript 7.0.2, @types/bun 1.4.2, wrangler 4.136.2
     bun test                                     # 48 pass, 0 fail, 184 expect() calls, 6 files
     bun run type-check                           # clean
+    bun add -d eslint typescript-eslint eslint-plugin-sonarjs eslint-plugin-security @eslint/js typescript@^5.9
+    bun run lint                                 # clean after draining 25 findings (see Surprises)
+    bun remove eslint typescript-eslint eslint-plugin-sonarjs @eslint/js     # decision A17
+    bun add -d typescript@~7.0.2 oxlint@^1.85.0 oxlint-tsgolint@^7.0.2002
+    bun run type-check                           # clean under TypeScript 7.0.2
+    bun run lint                                 # oxlint --deny-warnings: clean; exit 1 with an injected `any`
     bun run deploy:check                         # wrangler deploy --dry-run --outdir "$TMPDIR/wrangler-out"; 11.97 KiB, one binding ALLOWED_OWNERS
 
 
@@ -217,3 +236,4 @@ In `src/discord.ts`, pure message builders `notifyMessage(identity, input)` and 
 
 - 2026-09-22: Created at scaffold time from the grill-me session's decisions A1–A11 and the facts gathered before it.
 - 2026-09-23: Decisions A12–A16 (self-hosted distribution, no tenant constant, composite actions, registration by App installation, setup guide) after a review of the roadmap against future install and distribution; Milestones 1–3 amended, Milestone 4 listed as deferred, acceptance and interfaces extended, `docs/adr/0002` amended.
+- 2026-09-23: Decision A17 (TypeScript 7 with Oxlint and tsgolint as the lint gate) and three Surprises entries from building the gate.
