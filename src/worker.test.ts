@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { createJwksSource } from "./jwks.ts";
+import { JWKS_MIN_REFRESH_MS, createJwksSource } from "./jwks.ts";
 import { GITHUB_JWKS_URL, type JsonWebKeySet } from "./oidc.ts";
 import { bodyText, requestUrl } from "./testing/http.ts";
 import { AUDIENCE, NOW, createSigner, mint, standardClaims, type Signer } from "./testing/oidc-fixture.ts";
@@ -17,10 +17,12 @@ interface World {
   deps: Deps;
   jwksFetches: number;
   posted: unknown[];
+  /** Milliseconds added to NOW; tests move the clock by changing it. */
+  elapsedMs: number;
 }
 
 function world(options: { jwks?: () => JsonWebKeySet; webhookStatus?: number } = {}): World {
-  const w: World = { jwksFetches: 0, posted: [], deps: { fetch: async () => new Response(null), now: () => NOW, jwks: async () => ({ keys: [] }) } };
+  const w: World = { jwksFetches: 0, posted: [], elapsedMs: 0, deps: { fetch: async () => new Response(null), now: () => NOW, jwks: async () => ({ keys: [] }) } };
   const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = requestUrl(input);
     if (url === GITHUB_JWKS_URL) {
@@ -33,7 +35,7 @@ function world(options: { jwks?: () => JsonWebKeySet; webhookStatus?: number } =
     }
     throw new Error(`unexpected fetch ${url}`);
   };
-  w.deps = { fetch: fetcher, now: () => NOW, jwks: createJwksSource(fetcher) };
+  w.deps = { fetch: fetcher, now: () => new Date(NOW.getTime() + w.elapsedMs), jwks: createJwksSource(fetcher) };
   return w;
 }
 
@@ -118,19 +120,33 @@ describe("POST /notify", () => {
     expect(w.posted).toHaveLength(1);
   });
 
-  test("an unknown key triggers exactly one JWKS refresh", async () => {
+  test("a rotated key is picked up by a refresh once the minimum interval has passed", async () => {
     const rotated = await createSigner("rotated");
     let served = 0;
     const w = world({ jwks: () => (served++ === 0 ? signer.jwks : { keys: [...signer.jwks.keys, ...rotated.jwks.keys] }) });
     expect((await handle(post(await mint(signer), INPUT), ENV, w.deps)).status).toBe(204);
     expect(w.jwksFetches).toBe(1);
+    w.elapsedMs = JWKS_MIN_REFRESH_MS;
     expect((await handle(post(await mint(rotated), INPUT), ENV, w.deps)).status).toBe(204);
     expect(w.jwksFetches).toBe(2);
-    const unknown = await createSigner("never-published");
-    const response = await handle(post(await mint(unknown), INPUT), ENV, w.deps);
-    expect(response.status).toBe(401);
-    expect(await errorOf(response)).toBe("unknown key");
-    expect(w.jwksFetches).toBe(3);
+  });
+
+  test("a flood of tokens with unknown key ids cannot force more than one fetch per interval", async () => {
+    const w = world();
+    expect((await handle(post(await mint(signer), INPUT), ENV, w.deps)).status).toBe(204);
+    const stranger = await createSigner("never-published");
+    const forged = await mint(stranger);
+    const junk = `${forged.split(".").slice(0, 2).join(".")}.AAAA`;
+    for (let i = 0; i < 30; i += 1) {
+      const response = await handle(post(i % 2 === 0 ? forged : junk, INPUT), ENV, w.deps);
+      expect(response.status).toBe(401);
+      expect(await errorOf(response)).toBe("unknown key");
+    }
+    expect(w.jwksFetches).toBe(1);
+    w.elapsedMs = JWKS_MIN_REFRESH_MS;
+    for (let i = 0; i < 30; i += 1) expect((await handle(post(forged, INPUT), ENV, w.deps)).status).toBe(401);
+    expect(w.jwksFetches).toBe(2);
+    expect(w.posted).toHaveLength(1);
   });
 
   test("an unreachable JWKS endpoint is 503", async () => {
