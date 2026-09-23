@@ -1,0 +1,52 @@
+# Posts a plain notification to a Nudge instance (plan decision A14).
+#
+# The calling job needs `permissions: id-token: write`: the action requests a GitHub OIDC token
+# whose audience is the instance origin you pass as `endpoint`, so no secret is stored anywhere
+# (docs/adr/0002). The instance refuses repositories it does not serve with 403.
+name: Nudge notify
+description: Post a notification from this workflow run to a Discord channel through a Nudge instance
+inputs:
+  endpoint:
+    description: Origin of the Nudge instance, e.g. https://nudge.tia.run
+    required: true
+  title:
+    description: One line, shown as the message title
+    required: true
+  body:
+    description: The message text; long text is truncated by the instance
+    required: true
+  url:
+    description: Link for the title; defaults to this workflow run
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Post to Nudge
+      shell: bash
+      env:
+        ENDPOINT: ${{ inputs.endpoint }}
+        TITLE: ${{ inputs.title }}
+        BODY: ${{ inputs.body }}
+        LINK: ${{ inputs.url }}
+      run: |
+        set -euo pipefail
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::error::the job needs 'permissions: id-token: write' to call Nudge" >&2
+          exit 1
+        fi
+        endpoint="${ENDPOINT%/}"
+        token="$(curl -sSf -G "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+          -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          --data-urlencode "audience=$endpoint" | jq -r .value)"
+        payload="$(jq -cn --arg title "$TITLE" --arg body "$BODY" --arg url "$LINK" \
+          '{title: $title, body: $body} + (if $url == "" then {} else {url: $url} end)')"
+        status="$(curl -sS -o "$RUNNER_TEMP/nudge-response" -w '%{http_code}' \
+          -X POST "$endpoint/notify" \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          --data "$payload")"
+        if [ "$status" != "204" ]; then
+          echo "::error::Nudge answered $status: $(cat "$RUNNER_TEMP/nudge-response")" >&2
+          exit 1
+        fi
