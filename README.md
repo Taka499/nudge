@@ -26,7 +26,7 @@ steps:
 
 The message in Discord starts with the repository name, then the title linked to the URL, the body, and a footer with the branch, short commit and run id.
 
-The `v1` tag is created at the first release (Milestone 1 acceptance) and only ever moves to compatible changes; a breaking change gets `v2`.
+`v1` was tagged when Milestone 1 was accepted on 2026-09-24. It only ever moves to compatible changes; a breaking change gets `v2`.
 
 ## HTTP contract
 
