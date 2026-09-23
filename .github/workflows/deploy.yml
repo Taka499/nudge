@@ -25,9 +25,13 @@ concurrency:
 
 jobs:
   deploy:
+    # A manual run can pick any branch in the dispatch form; production is only ever main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.5"
