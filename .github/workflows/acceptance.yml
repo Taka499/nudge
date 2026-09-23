@@ -1,0 +1,97 @@
+# Guards: a deployed instance's refusal paths (docs/plans/EXECPLAN_NUDGE.md § Validation and
+# Acceptance, Milestone 1). Run by hand after a deploy. It mints real GitHub OIDC tokens and sends
+# every request an instance must refuse — no token, a token for another audience, a tampered
+# signature, an expired token — and, when a second instance is given, checks that it verifies
+# against its own origin (a token for the first instance is refused) and applies its own owner
+# gate. Every request carries the body "This message must never appear.", so a leak shows in
+# Discord. It never posts successfully; the accepted path is proven by a consumer's real run.
+name: Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      endpoint:
+        description: Instance under test (its origin)
+        required: true
+        default: https://nudge.tia.run
+      second_endpoint:
+        description: "Optional second instance whose ALLOWED_OWNERS excludes this repository's owner (e.g. https://nudge-acceptance.<account>.workers.dev)"
+        required: false
+        default: ""
+      wait_for_expiry:
+        description: Wait for a token to expire and check it is refused (takes the token's lifetime)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  refusals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      ENDPOINT: ${{ inputs.endpoint }}
+      SECOND: ${{ inputs.second_endpoint }}
+      WAIT_FOR_EXPIRY: ${{ inputs.wait_for_expiry }}
+      OWNER: ${{ github.repository_owner }}
+    steps:
+      - name: Check every refusal
+        shell: bash
+        run: |
+          set -euo pipefail
+          failures=0
+          E="${ENDPOINT%/}"; S="${SECOND%/}"
+
+          token_for() {
+            curl -sSf -G "$ACTIONS_ID_TOKEN_REQUEST_URL" -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              --data-urlencode "audience=$1" | jq -r .value
+          }
+          claim() { # token, claim name
+            local p; p="$(cut -d. -f2 <<<"$1" | tr '_-' '/+')"
+            while [ $(( ${#p} % 4 )) -ne 0 ]; do p="$p="; done
+            base64 -d <<<"$p" | jq -r ".$2"
+          }
+          expect() { # label, endpoint, token (may be empty), status, error
+            local auth=() status error
+            if [ -n "$3" ]; then auth=(-H "Authorization: Bearer $3"); fi
+            status="$(curl -sS -o "$RUNNER_TEMP/answer" -w '%{http_code}' -X POST "$2/notify" ${auth[@]+"${auth[@]}"} \
+              -H 'Content-Type: application/json' \
+              -d '{"title":"Nudge acceptance check","body":"This message must never appear."}')"
+            error="$(jq -r '.error // empty' "$RUNNER_TEMP/answer" 2>/dev/null || true)"
+            if [ "$status" = "$4" ] && [ "$error" = "$5" ]; then
+              echo "PASS  $1 -> $status $error"
+            else
+              echo "::error::FAIL  $1: expected $4 '$5', got $status '$error'"
+              failures=$((failures + 1))
+            fi
+          }
+
+          good="$(token_for "$E")"
+          tampered="${good%?????}AAAAA"
+          expect "no token"                        "$E" ""                                  401 "missing bearer token"
+          expect "token for another audience"      "$E" "$(token_for https://example.invalid)" 401 "wrong audience"
+          expect "tampered signature"              "$E" "$tampered"                          401 "invalid signature"
+          expect "junk token with an unknown kid"  "$E" "eyJhbGciOiJSUzI1NiIsImtpZCI6Im5vLXN1Y2gta2V5In0.e30.AAAA" 401 "unknown key"
+
+          if [ -n "$S" ]; then
+            expect "second instance, token for the first"   "$S" "$good"               401 "wrong audience"
+            expect "second instance, token for itself"      "$S" "$(token_for "$S")"   403 "repository owner $OWNER is not served by this instance"
+          else
+            echo "SKIP  second instance: no second_endpoint given"
+          fi
+
+          if [ "$WAIT_FOR_EXPIRY" = "true" ]; then
+            lifetime=$(( $(claim "$good" exp) - $(claim "$good" iat) ))
+            wait=$(( $(claim "$good" exp) + 61 - $(date +%s) ))
+            echo "Token lifetime ${lifetime}s; waiting ${wait}s for it to expire past the Worker's 60 s clock skew"
+            if [ "$wait" -gt 4200 ]; then echo "::error::token lifetime too long to wait for"; exit 1; fi
+            if [ "$wait" -gt 0 ]; then sleep "$wait"; fi
+            expect "expired token" "$E" "$good" 401 "token expired"
+          else
+            echo "SKIP  expired token: wait_for_expiry is off"
+          fi
+
+          echo "$failures failure(s)"
+          test "$failures" -eq 0

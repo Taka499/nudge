@@ -21,3 +21,19 @@ ALLOWED_OWNERS = "Taka499,tia-tools"
 
 # Secrets, set with `bunx wrangler secret put <NAME>` (never in this file):
 #   DISCORD_WEBHOOK_URL   the channel webhook that `notify` posts to
+
+# A second, throwaway instance for the self-hosting acceptance check (plan decision A13, § Validation
+# and Acceptance): same code, served only on workers.dev, an owner gate that deliberately excludes
+# this repository's owner, and no Discord webhook, so it can never post. Deploy by hand with
+# `bun run deploy:acceptance`; delete with `bunx wrangler delete --env acceptance` when done.
+# `routes = []` is required: an environment INHERITS the top-level `routes`, and deploying it
+# without this line offers to move the production custom domain onto this Worker (wrangler asks
+# "Update them to point to this script instead?"; the answer that breaks production is Y).
+# `src/wrangler-config.test.ts` pins it.
+[env.acceptance]
+name = "nudge-acceptance"
+workers_dev = true
+routes = []
+
+[env.acceptance.vars]
+ALLOWED_OWNERS = "tia-tools"

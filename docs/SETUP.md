@@ -60,6 +60,16 @@ steps:
 
 Run the workflow once by hand (`workflow_dispatch`) and look at the channel. If the step fails it prints the instance's answer, for example `403 repository owner x is not served by this instance` when `ALLOWED_OWNERS` is missing the owner.
 
+## 7. Verify the refusals
+
+A consumer's real run proves the accepted path. The refusals need real GitHub-signed tokens, so they are checked by a workflow in this repository: Actions → Acceptance → Run workflow, with your instance as `endpoint`. It sends a request with no token, a token for another audience, a tampered signature, a junk key id and, unless you switch it off, a token it has waited to expire, and fails unless each is refused with the exact expected answer. Every request carries the body "This message must never appear.", so check the channel afterwards: nothing may have arrived.
+
+To also prove that nothing ties the code to one hostname, deploy a second, throwaway instance from the same commit. It lives only on `workers.dev`, has no Discord webhook, and allows only the owner `tia-tools`:
+
+    bun run deploy:acceptance          # prints https://nudge-acceptance.<account>.workers.dev
+
+Edit `ALLOWED_OWNERS` under `[env.acceptance.vars]` in `wrangler.toml` first if your own repositories belong to `tia-tools`: it must exclude the owner of the repository the workflow runs in. Run Acceptance again with that URL as `second_endpoint`. The second instance must refuse a token minted for the first instance (401 `wrong audience`) and must accept a token for its own origin far enough to reach the owner gate (403). Delete it afterwards with `bunx wrangler delete --env acceptance`.
+
 ## Milestone 2 (not yet available)
 
 `request` and `resolve` need a Discord application with a bot and an Interactions Endpoint URL, a GitHub App installed on the consuming repositories, and a KV namespace. This section is written when that milestone ships. One thing to know in advance: GitHub App names are unique across GitHub, so pick a name for yours other than "Nudge".
