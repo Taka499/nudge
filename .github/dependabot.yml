@@ -1,0 +1,9 @@
+# Keeps the hash-pinned actions in .github/workflows current (docs/adr/0003): when an action publishes a new
+# release, Dependabot opens a pull request that changes both the commit hash and its version comment, so each
+# update is reviewed instead of arriving silently through a moved tag.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
