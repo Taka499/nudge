@@ -43,19 +43,20 @@ In the repository settings add the secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLAR
 
 ## 6. Call it from a repository
 
-In a repository whose owner is in `ALLOWED_OWNERS`, give the job `id-token: write` and add the action:
+In a repository whose owner is in `ALLOWED_OWNERS`, add a job with `id-token: write` that runs the action, pinned by commit hash (why, and how Dependabot keeps it current: `README.md` § Pin by commit hash):
 
 ```yaml
-permissions:
-  contents: read
-  id-token: write
-
-steps:
-  - uses: Taka499/nudge/actions/notify@v1
-    with:
-      endpoint: https://<your hostname>
-      title: "Nightly build: ${{ job.status }}"
-      body: "See the run for details."
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: Taka499/nudge/actions/notify@b706447babea35d3b95dcdbae7ec03f007cb2b2a # v1.0.0
+        with:
+          endpoint: https://<your hostname>
+          title: "Nightly build"
+          body: "See the run for details."
 ```
 
 Run the workflow once by hand (`workflow_dispatch`) and look at the channel. If the step fails it prints the instance's answer, for example `403 repository owner x is not served by this instance` when `ALLOWED_OWNERS` is missing the owner.

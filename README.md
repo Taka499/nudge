@@ -8,25 +8,50 @@ It is a small Cloudflare Worker plus the GitHub Actions that call it. Nudge is a
 
 The job needs `id-token: write`. The action requests a short-lived GitHub OIDC token for your instance and sends it as the bearer token; the instance verifies it against GitHub's public keys (`docs/adr/0002`) and refuses repositories it does not serve.
 
-```yaml
-permissions:
-  contents: read
-  id-token: write
+Give the notification a job of its own, after the job that does the work:
 
-steps:
-  - uses: Taka499/nudge/actions/notify@v1
+```yaml
+jobs:
+  update:
+    # ... the job that does the work, with whatever permissions and secrets it needs
+
+  notify:
+    needs: update
     if: always()
-    with:
-      endpoint: https://nudge.tia.run          # your instance
-      title: "Weekly update: ${{ job.status }}"
-      body: |
-        12 cards changed, 0 held.
-      url: ${{ github.server_url }}/${{ github.repository }}/pull/42   # optional; defaults to this run
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write                            # nothing else: no secrets, no environment
+    steps:
+      - uses: Taka499/nudge/actions/notify@b706447babea35d3b95dcdbae7ec03f007cb2b2a # v1.0.0
+        with:
+          endpoint: https://nudge.tia.run          # your instance
+          title: "Weekly update: ${{ needs.update.result }}"
+          body: |
+            12 cards changed, 0 held.
+          url: ${{ github.server_url }}/${{ github.repository }}/pull/42   # optional; defaults to this run
 ```
 
 The message in Discord starts with the repository name, then the title linked to the URL, the body, and a footer with the branch, short commit and run id.
 
-`v1` was tagged when Milestone 1 was accepted on 2026-09-24. It only ever moves to compatible changes; a breaking change gets `v2`.
+### Pin by commit hash
+
+The action runs inside your job, with your job's permissions. `id-token: write` lets any code in the job obtain an OIDC token that names *your* repository, for any audience — including a cloud provider or package registry that trusts your repository's tokens. A tag such as `v1` can be moved by whoever controls this repository, and your workflow would run the new code on its next run without any change on your side. A 40-character commit hash cannot change. That is why the snippet pins a hash, with the version as a comment (`docs/adr/0003`).
+
+The separate job limits the damage if the action were ever compromised: its token carries no deployment environment, so a cloud trust policy that requires one refuses it, and no secrets of the working job are in reach.
+
+Keep the pin current with Dependabot. It opens a pull request that changes the hash and the version comment together when a new version is released:
+
+```yaml
+# .github/dependabot.yml
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+```
+
+Versions. Every exact version (`v1.0.0`, `v1.1.0`, …) is a GitHub Release, and this repository has immutable releases enabled, so a version's tag can never be moved to other code; pick the one that matches the Worker you deployed. `v1` is a plain tag moved to each compatible version — compatible also with Workers deployed from earlier `v1` versions; a breaking change gets `v2`. `@v1` works if you accept following a movable tag, but it is not the recommended form. The actions contain no nested `uses:`, so pinning one pins all the code it runs (enforced by `src/pinning.test.ts`).
 
 ## HTTP contract
 
