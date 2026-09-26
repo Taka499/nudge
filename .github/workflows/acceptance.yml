@@ -11,9 +11,8 @@ on:
   workflow_dispatch:
     inputs:
       endpoint:
-        description: Instance under test (its origin)
+        description: Instance under test (its origin, e.g. https://nudge.example.com)
         required: true
-        default: https://nudge.tia.run
       second_endpoint:
         description: "Optional second instance with no ALLOWED_OWNERS secret, so its empty owner list refuses this repository (e.g. https://nudge-acceptance.<account>.workers.dev)"
         required: false
