@@ -7,7 +7,7 @@
  * .dev.vars (plan decision A13, docs/adr/0004).
  */
 
-import { notifyMessage, postWebhook } from "./discord.ts";
+import { notifyMessage, postMessage, type BotClient, type Sleep } from "./discord.ts";
 import type { Fetcher } from "./fetcher.ts";
 import { isAllowedOwner, parseAllowedOwners } from "./gate.ts";
 import { createJwksSource, type JwksSource } from "./jwks.ts";
@@ -17,13 +17,17 @@ import { parseNotifyInput } from "./validate.ts";
 export interface Env {
   ALLOWED_OWNERS?: string;
   NUDGE_AUDIENCE?: string;
-  DISCORD_WEBHOOK_URL?: string;
+  /** The Discord application's bot token and the channel it posts to (A25). */
+  DISCORD_BOT_TOKEN?: string;
+  DISCORD_CHANNEL_ID?: string;
 }
 
 export interface Deps {
   fetch: Fetcher;
   now: () => Date;
   jwks: JwksSource;
+  /** Waits; injected so tests never sleep. Used for the one retry on a Discord 429. */
+  sleep: Sleep;
 }
 
 /** Largest request body accepted, in bytes. */
@@ -48,13 +52,20 @@ async function notify(request: Request, env: Env, deps: Deps): Promise<Response>
   const input = parseNotifyInput(body.json);
   if (!input.ok) return json(400, { error: input.error });
 
-  if (!env.DISCORD_WEBHOOK_URL) return json(500, { error: "instance has no DISCORD_WEBHOOK_URL" });
+  const bot = botClient(env);
+  if (bot instanceof Response) return bot;
   try {
-    await postWebhook(env.DISCORD_WEBHOOK_URL, notifyMessage(identity, input.value, deps.now()), deps.fetch);
+    await postMessage(bot, notifyMessage(identity, input.value, deps.now()), deps.fetch, deps.sleep);
   } catch {
     return json(502, { error: "Discord refused the message" });
   }
   return new Response(null, { status: 204 });
+}
+
+function botClient(env: Env): BotClient | Response {
+  if (!env.DISCORD_BOT_TOKEN) return json(500, { error: "instance has no DISCORD_BOT_TOKEN" });
+  if (!env.DISCORD_CHANNEL_ID) return json(500, { error: "instance has no DISCORD_CHANNEL_ID" });
+  return { token: env.DISCORD_BOT_TOKEN, channelId: env.DISCORD_CHANNEL_ID };
 }
 
 async function authenticate(request: Request, env: Env, deps: Deps): Promise<WorkflowIdentity | Response> {
@@ -112,6 +123,7 @@ const live: Deps = {
   fetch: (input, init) => fetch(input, init),
   now: () => new Date(),
   jwks: createJwksSource((input, init) => fetch(input, init)),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
 export default {

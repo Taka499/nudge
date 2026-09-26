@@ -2,15 +2,18 @@
 # it in, and load it once with
 #     bunx wrangler secret bulk --env "" .dev.vars
 # Every value is a Worker secret, sensitive or not, and survives every deploy; this file is the
-# readable copy. `wrangler dev` reads .dev.vars too. Milestone 2 adds the Discord application and
-# GitHub App values here; see docs/SETUP.md § Milestone 2.
+# readable copy. `wrangler dev` reads .dev.vars too. Milestone 2 adds the application's public key,
+# the allowed user ids and the GitHub App values here; see docs/SETUP.md § Milestone 2.
 
 # Repository owners (GitHub users or organisations) whose workflows this instance serves, comma-
 # separated. The only gate (plan decision A24): anyone else gets 403; an empty list serves nobody.
 ALLOWED_OWNERS=your-github-user,your-organisation
 
-# The channel webhook that `notify` posts to (Discord: channel settings → Integrations → Webhooks).
-DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+# The Discord application's bot token (developer portal → your application → Bot → Reset Token) and
+# the channel the bot posts to (Discord → Developer Mode → right-click the channel → Copy Channel ID).
+# Every message goes through the bot (plan decision A25); docs/SETUP.md § 2.
+DISCORD_BOT_TOKEN=...
+DISCORD_CHANNEL_ID=123456789012345678
 
 # Optional: the OIDC audience consumers must request. Defaults to this Worker's own origin, which is
 # what the actions request for the `endpoint` you give them. Set it only if the Worker sits behind

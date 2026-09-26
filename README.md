@@ -72,8 +72,8 @@ Errors carry `{ "error": string }`:
 | 403 | the repository's owner is not served by this instance |
 | 413 | body larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
-| 500 | the instance has no Discord webhook configured |
-| 502 | Discord refused the message |
+| 500 | the instance has no Discord bot token or channel id configured |
+| 502 | Discord refused the message (a 429 is retried once after the wait it asks for, up to 5 s), or answered without a message id |
 | 503 | GitHub's signing keys could not be fetched |
 
 Titles longer than 256 characters and bodies longer than 4096 are truncated with an ellipsis, not refused. Mentions in the body never ping anyone.
@@ -88,4 +88,4 @@ bun run lint           # Oxlint + tsgolint: size, complexity and type-escape rul
 bun run deploy:check   # wrangler dry run: builds the Worker without an account
 ```
 
-Layout: `src/oidc.ts` verifies tokens, `src/jwks.ts` caches GitHub's keys, `src/gate.ts` is the owner allowlist, `src/validate.ts` checks bodies, `src/discord.ts` builds and posts messages, `src/worker.ts` routes. `actions/` holds the composite actions consumers call. `.dev.vars.example` lists the instance values, which are Worker secrets loaded from a gitignored copy (`docs/adr/0004`); `wrangler.toml` names no tenant. Design, milestones and every decision: `docs/plans/EXECPLAN_NUDGE.md`.
+Layout: `src/oidc.ts` verifies tokens, `src/jwks.ts` caches GitHub's keys, `src/gate.ts` is the owner allowlist, `src/validate.ts` checks bodies, `src/discord.ts` builds messages and posts them through the bot, `src/worker.ts` routes. `actions/` holds the composite actions consumers call. `.dev.vars.example` lists the instance values, which are Worker secrets loaded from a gitignored copy (`docs/adr/0004`); `wrangler.toml` names no tenant. Design, milestones and every decision: `docs/plans/EXECPLAN_NUDGE.md`.
