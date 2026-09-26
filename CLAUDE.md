@@ -25,6 +25,7 @@ Cross-plan decisions live in `docs/adr/` (convention: `docs/adr/README.md`). Thi
 - `docs/adr/0001-nudge-dispatches-it-never-merges.md` — **accepted**: on Approve, Nudge sends a `repository_dispatch` to the repository and the repository's own workflow acts; Nudge never merges, deploys or edits anything on GitHub.
 - `docs/adr/0002-inbound-requests-authenticate-with-github-oidc-tokens.md` — **accepted**, amended 2026-09-23: workflows authenticate with a GitHub Actions OIDC token whose audience is the instance's own origin (`nudge.tia.run` for the author's instance); no consumer stores a secret for Nudge.
 - `docs/adr/0003-consumers-pin-actions-by-commit-hash.md` — **accepted**: consumers reference the actions by 40-character commit hash with a version comment; exact versions are immutable GitHub Releases, `v1` is a plain moving tag with no Release; the actions contain no nested `uses:` and this repository's workflows pin every action by hash (`src/pinning.test.ts`).
+- `docs/adr/0004-an-instance-is-its-worker-secrets.md` — **accepted**: every instance value is a Worker secret loaded from the gitignored `.dev.vars`; the custom domain is a dashboard attachment; `wrangler.toml` names no tenant, so a fork edits no tracked file.
 
 ## Project Overview
 
@@ -32,7 +33,7 @@ Nudge is a Cloudflare Worker at `https://nudge.tia.run` that lets the user's Git
 
 ## Architecture
 
-One Cloudflare Worker (`src/worker.ts`, entry `handle(request, env, deps)`) plus the composite actions in `actions/` that consumers call. Every rule is a pure module with I/O at the edges (per `docs/plans/EXECPLAN_NUDGE.md` § Plan of Work): `src/oidc.ts` verifies GitHub OIDC tokens against a key set passed in, `src/jwks.ts` fetches and caches that key set, `src/gate.ts` is the owner allowlist (Milestone 1 form of decision A15), `src/validate.ts` checks request bodies, `src/discord.ts` builds and posts messages. `wrangler.toml` holds every instance-specific value; the code names no hostname, owner or channel (decision A13). Consumer-facing contract: `README.md`; operator setup: `docs/SETUP.md`.
+One Cloudflare Worker (`src/worker.ts`, entry `handle(request, env, deps)`) plus the composite actions in `actions/` that consumers call. Every rule is a pure module with I/O at the edges (per `docs/plans/EXECPLAN_NUDGE.md` § Plan of Work): `src/oidc.ts` verifies GitHub OIDC tokens against a key set passed in, `src/jwks.ts` fetches and caches that key set, `src/gate.ts` is the owner allowlist (Milestone 1 form of decision A15), `src/validate.ts` checks request bodies, `src/discord.ts` builds and posts messages. `wrangler.toml` holds the instance-specific values today; from Milestone 2's first pull request every such value is a Worker secret and `wrangler.toml` names no tenant (per `docs/adr/0004`); the code names no hostname, owner or channel (decision A13). Consumer-facing contract: `README.md`; operator setup: `docs/SETUP.md`.
 
 ## Setup and Development
 
