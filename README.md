@@ -88,4 +88,4 @@ bun run lint           # Oxlint + tsgolint: size, complexity and type-escape rul
 bun run deploy:check   # wrangler dry run: builds the Worker without an account
 ```
 
-Layout: `src/oidc.ts` verifies tokens, `src/jwks.ts` caches GitHub's keys, `src/gate.ts` is the owner allowlist, `src/validate.ts` checks bodies, `src/discord.ts` builds and posts messages, `src/worker.ts` routes. `actions/` holds the composite actions consumers call. `wrangler.toml` is the instance configuration. Design, milestones and every decision: `docs/plans/EXECPLAN_NUDGE.md`.
+Layout: `src/oidc.ts` verifies tokens, `src/jwks.ts` caches GitHub's keys, `src/gate.ts` is the owner allowlist, `src/validate.ts` checks bodies, `src/discord.ts` builds and posts messages, `src/worker.ts` routes. `actions/` holds the composite actions consumers call. `.dev.vars.example` lists the instance values, which are Worker secrets loaded from a gitignored copy (`docs/adr/0004`); `wrangler.toml` names no tenant. Design, milestones and every decision: `docs/plans/EXECPLAN_NUDGE.md`.
