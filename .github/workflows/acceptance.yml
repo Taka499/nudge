@@ -15,7 +15,7 @@ on:
         required: true
         default: https://nudge.tia.run
       second_endpoint:
-        description: "Optional second instance whose ALLOWED_OWNERS excludes this repository's owner (e.g. https://nudge-acceptance.<account>.workers.dev)"
+        description: "Optional second instance with no ALLOWED_OWNERS secret, so its empty owner list refuses this repository (e.g. https://nudge-acceptance.<account>.workers.dev)"
         required: false
         default: ""
       wait_for_expiry:

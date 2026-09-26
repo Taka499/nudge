@@ -1,0 +1,18 @@
+# Instance values of a Nudge Worker (docs/adr/0004). Copy this file to .dev.vars (gitignored), fill
+# it in, and load it once with
+#     bunx wrangler secret bulk --env "" .dev.vars
+# Every value is a Worker secret, sensitive or not, and survives every deploy; this file is the
+# readable copy. `wrangler dev` reads .dev.vars too. Milestone 2 adds the Discord application and
+# GitHub App values here; see docs/SETUP.md § Milestone 2.
+
+# Repository owners (GitHub users or organisations) whose workflows this instance serves, comma-
+# separated. The only gate (plan decision A24): anyone else gets 403; an empty list serves nobody.
+ALLOWED_OWNERS=your-github-user,your-organisation
+
+# The channel webhook that `notify` posts to (Discord: channel settings → Integrations → Webhooks).
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+
+# Optional: the OIDC audience consumers must request. Defaults to this Worker's own origin, which is
+# what the actions request for the `endpoint` you give them. Set it only if the Worker sits behind
+# something that rewrites the request origin, or to pin one hostname when several reach the Worker.
+# NUDGE_AUDIENCE=https://nudge.example.com

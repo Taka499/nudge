@@ -40,7 +40,9 @@ jobs:
       - run: bun run type-check
       - run: bun run lint
       - name: Deploy the Worker
-        run: bunx wrangler deploy
+        # --env "" names the top-level (production) configuration; the file also defines the throwaway
+        # acceptance environment, and wrangler warns when the target is left implicit.
+        run: bunx wrangler deploy --env ""
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 /**
- * wrangler.toml is the instance configuration (plan decision A13). A wrangler environment inherits
- * the top-level `routes`, so an environment without its own `routes` would, when deployed, offer to
- * take the production custom domain away from the production Worker. These checks keep every
- * non-production environment off the production hostname.
+ * wrangler.toml names no tenant (docs/adr/0004): every instance value is a Worker secret and the
+ * custom domain is attached outside the file, so a fork never edits it. A wrangler environment
+ * also inherits a top-level `routes`, and an environment without its own would, when deployed,
+ * offer to take a production custom domain away from the production Worker (plan § Surprises).
  */
 
 async function config(): Promise<Record<string, unknown>> {
@@ -18,7 +18,16 @@ function table(value: unknown): Record<string, unknown> {
 }
 
 describe("wrangler.toml", () => {
-  test("every environment declares its own routes, so none inherits the production domain", async () => {
+  test("names no tenant: no top-level routes, and no vars at any level", async () => {
+    const top = await config();
+    expect(top["routes"]).toBeUndefined();
+    expect(top["vars"]).toBeUndefined();
+    for (const [name, env] of Object.entries(table(top["env"]))) {
+      expect({ name, vars: table(env)["vars"] }).toEqual({ name, vars: undefined });
+    }
+  });
+
+  test("every environment declares its own routes, so none could inherit a production domain", async () => {
     const envs = table((await config())["env"]);
     expect(Object.keys(envs).length).toBeGreaterThan(0);
     for (const [name, env] of Object.entries(envs)) {
@@ -27,14 +36,10 @@ describe("wrangler.toml", () => {
     }
   });
 
-  test("the acceptance instance has no routes, a different name, and never allows this repository's owner", async () => {
+  test("the acceptance instance has no routes and a different name", async () => {
     const top = await config();
     const acceptance = table(table(top["env"])["acceptance"]);
     expect(acceptance["routes"]).toEqual([]);
     expect(acceptance["name"]).not.toBe(top["name"]);
-    const allowed = table(acceptance["vars"])["ALLOWED_OWNERS"];
-    expect(typeof allowed).toBe("string");
-    const owners = (typeof allowed === "string" ? allowed : "").toLowerCase().split(",").map((o) => o.trim());
-    expect(owners).not.toContain("taka499");
   });
 });
