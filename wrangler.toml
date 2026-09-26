@@ -1,39 +1,27 @@
 name = "nudge"
 main = "src/worker.ts"
 compatibility_date = "2026-09-01"
+# Template defaults, stated so wrangler does not warn at deploy: every instance serves on its
+# workers.dev hostname, and per-version preview hostnames stay off (one more origin, one more
+# audience, and nothing needs them).
+workers_dev = true
+preview_urls = false
 
-# Instance configuration (plan decision A13). A self-hoster changes only this file and the
-# secrets: the code names no hostname, owner or channel. See docs/SETUP.md.
-#
-# Custom domain: Cloudflare creates and manages the DNS record when this deploys (the zone is in
-# the same account). Delete the `routes` line to serve from the workers.dev hostname instead.
-routes = [
-  { pattern = "nudge.tia.run", custom_domain = true }
-]
-
-[vars]
-# Repository owners (users or organisations) whose workflows this instance accepts, comma-separated.
-# Milestone 1 gate (A15); replaced by the GitHub App installation check in Milestone 2.
-ALLOWED_OWNERS = "Taka499,tia-tools"
-# Optional: the OIDC audience consumers must request. Defaults to this Worker's own origin,
-# e.g. https://nudge.tia.run, which is what the actions in actions/ request for the `endpoint` you give them.
-# NUDGE_AUDIENCE = "https://nudge.tia.run"
-
-# Secrets, set with `bunx wrangler secret put <NAME>` (never in this file):
-#   DISCORD_WEBHOOK_URL   the channel webhook that `notify` posts to
+# This file names no tenant (docs/adr/0004). Every instance value — the allowed owners, the Discord
+# and GitHub App credentials — is a Worker secret: copy .dev.vars.example to .dev.vars, fill it in,
+# and load it with `bunx wrangler secret bulk --env "" .dev.vars` (docs/SETUP.md § 4). No `[vars]`
+# and no top-level `routes` may appear here (src/wrangler-config.test.ts): the Worker serves on its
+# workers.dev hostname, and a custom domain is attached once with `bunx wrangler deploy --domain
+# <hostname>` or in the dashboard, after which deploys from this file leave it alone (A23).
 
 # A second, throwaway instance for the self-hosting acceptance check (plan decision A13, § Validation
-# and Acceptance): same code, served only on workers.dev, an owner gate that deliberately excludes
-# this repository's owner, and no Discord webhook, so it can never post. Deploy by hand with
+# and Acceptance): same code, served only on workers.dev, with no secrets at all, so its empty owner
+# list refuses every repository (403) and it can never post. Deploy by hand with
 # `bun run deploy:acceptance`; delete with `bunx wrangler delete --env acceptance` when done.
-# `routes = []` is required: an environment INHERITS the top-level `routes`, and deploying it
-# without this line offers to move the production custom domain onto this Worker (wrangler asks
-# "Update them to point to this script instead?"; the answer that breaks production is Y).
-# `src/wrangler-config.test.ts` pins it.
+# `routes = []` stays as a guard: an environment INHERITS a top-level `routes`, and if one were ever
+# added back above, deploying this environment without the line would offer to move the production
+# custom domain onto this Worker (plan § Surprises). `src/wrangler-config.test.ts` pins it.
 [env.acceptance]
 name = "nudge-acceptance"
 workers_dev = true
 routes = []
-
-[env.acceptance.vars]
-ALLOWED_OWNERS = "tia-tools"

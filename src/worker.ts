@@ -3,8 +3,8 @@
  *
  * `handle` takes every dependency as an argument (fetch, clock, key set) so `worker.test.ts`
  * drives the whole request path with keys it generated; the default export wires the live ones.
- * Nothing here names a hostname, owner or channel: those are `wrangler.toml` variables and
- * secrets (plan decision A13).
+ * Nothing here names a hostname, owner or channel: those are Worker secrets loaded from
+ * .dev.vars (plan decision A13, docs/adr/0004).
  */
 
 import { notifyMessage, postWebhook } from "./discord.ts";

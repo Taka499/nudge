@@ -1,11 +1,17 @@
 import { describe, expect, test } from "bun:test";
 
 /**
- * wrangler.toml is the instance configuration (plan decision A13). A wrangler environment inherits
- * the top-level `routes`, so an environment without its own `routes` would, when deployed, offer to
- * take the production custom domain away from the production Worker. These checks keep every
- * non-production environment off the production hostname.
+ * wrangler.toml names no tenant (docs/adr/0004): every instance value is a Worker secret and the
+ * custom domain is attached outside the file, so a fork never edits it. The file may contain only
+ * the keys listed here; anything else (`routes`, `route`, `vars`, a KV or D1 binding with an
+ * account-specific id) is a tenant value in disguise. A wrangler environment also inherits a
+ * top-level `routes`, and an environment without its own would, when deployed, offer to take a
+ * production custom domain away from the production Worker (plan § Surprises).
  */
+
+// Generic Worker options a template may carry are listed; a tenant value has no place here.
+const TOP_LEVEL_KEYS = ["name", "main", "compatibility_date", "compatibility_flags", "workers_dev", "preview_urls", "observability", "env"];
+const ENVIRONMENT_KEYS = ["name", "workers_dev", "routes"];
 
 async function config(): Promise<Record<string, unknown>> {
   const parsed: unknown = Bun.TOML.parse(await Bun.file(new URL("../wrangler.toml", import.meta.url)).text());
@@ -18,23 +24,30 @@ function table(value: unknown): Record<string, unknown> {
 }
 
 describe("wrangler.toml", () => {
-  test("every environment declares its own routes, so none inherits the production domain", async () => {
-    const envs = table((await config())["env"]);
-    expect(Object.keys(envs).length).toBeGreaterThan(0);
-    for (const [name, env] of Object.entries(envs)) {
-      const routes = table(env)["routes"];
-      expect({ name, hasOwnRoutes: Array.isArray(routes) }).toEqual({ name, hasOwnRoutes: true });
+  test("names no tenant: only the allowed keys appear, at the top level and in every environment", async () => {
+    const top = await config();
+    for (const key of Object.keys(top)) {
+      expect({ key, allowed: TOP_LEVEL_KEYS.includes(key) }).toEqual({ key, allowed: true });
+    }
+    for (const [name, env] of Object.entries(table(top["env"]))) {
+      for (const key of Object.keys(table(env))) {
+        expect({ name, key, allowed: ENVIRONMENT_KEYS.includes(key) }).toEqual({ name, key, allowed: true });
+      }
     }
   });
 
-  test("the acceptance instance has no routes, a different name, and never allows this repository's owner", async () => {
+  test("every environment declares `routes = []`: none inherits a production domain, none carries one of its own", async () => {
+    const envs = table((await config())["env"]);
+    expect(Object.keys(envs).length).toBeGreaterThan(0);
+    for (const [name, env] of Object.entries(envs)) {
+      expect({ name, routes: table(env)["routes"] }).toEqual({ name, routes: [] });
+    }
+  });
+
+  test("the acceptance instance has no routes and a different name", async () => {
     const top = await config();
     const acceptance = table(table(top["env"])["acceptance"]);
     expect(acceptance["routes"]).toEqual([]);
     expect(acceptance["name"]).not.toBe(top["name"]);
-    const allowed = table(acceptance["vars"])["ALLOWED_OWNERS"];
-    expect(typeof allowed).toBe("string");
-    const owners = (typeof allowed === "string" ? allowed : "").toLowerCase().split(",").map((o) => o.trim());
-    expect(owners).not.toContain("taka499");
   });
 });

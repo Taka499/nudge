@@ -7,9 +7,9 @@
     "test": "bun test",
     "type-check": "tsc --noEmit",
     "lint": "oxlint --deny-warnings",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy --env \"\"",
     "deploy:acceptance": "wrangler deploy --env acceptance",
-    "deploy:check": "wrangler deploy --dry-run --outdir \"${TMPDIR:-/tmp}/wrangler-out\""
+    "deploy:check": "wrangler deploy --env \"\" --dry-run --outdir \"${TMPDIR:-/tmp}/wrangler-out\""
   },
   "devDependencies": {
     "@types/bun": "^1.4.2",

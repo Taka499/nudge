@@ -1,9 +1,8 @@
 /**
- * Which repositories this instance serves (plan decision A15, Milestone 1 form).
- *
- * The allowlist is the `ALLOWED_OWNERS` variable: repository owners, comma-separated. GitHub
- * owner names are case-insensitive, so the comparison is too. An empty list allows nobody.
- * Milestone 2 replaces this with the GitHub App installation check.
+ * Which repositories this instance serves: the `ALLOWED_OWNERS` secret, repository owners,
+ * comma-separated (plan decisions A15 and A24: the only gate, in every milestone). GitHub owner
+ * names are case-insensitive, so the comparison is too. An empty or missing list allows nobody,
+ * which is what an instance with no secrets does; the acceptance instance relies on it.
  */
 
 export function parseAllowedOwners(value: string | undefined): string[] {
