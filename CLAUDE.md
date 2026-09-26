@@ -25,7 +25,7 @@ Cross-plan decisions live in `docs/adr/` (convention: `docs/adr/README.md`). Thi
 - `docs/adr/0001-nudge-dispatches-it-never-merges.md` — **accepted**: on Approve, Nudge sends a `repository_dispatch` to the repository and the repository's own workflow acts; Nudge never merges, deploys or edits anything on GitHub.
 - `docs/adr/0002-inbound-requests-authenticate-with-github-oidc-tokens.md` — **accepted**, amended 2026-09-23: workflows authenticate with a GitHub Actions OIDC token whose audience is the instance's own origin (`nudge.tia.run` for the author's instance); no consumer stores a secret for Nudge.
 - `docs/adr/0003-consumers-pin-actions-by-commit-hash.md` — **accepted**: consumers reference the actions by 40-character commit hash with a version comment; exact versions are immutable GitHub Releases, `v1` is a plain moving tag with no Release; the actions contain no nested `uses:` and this repository's workflows pin every action by hash (`src/pinning.test.ts`).
-- `docs/adr/0004-an-instance-is-its-worker-secrets.md` — **accepted**: every instance value is a Worker secret loaded from the gitignored `.dev.vars`; the custom domain is a dashboard attachment; `wrangler.toml` names no tenant, so a fork edits no tracked file.
+- `docs/adr/0004-an-instance-is-its-worker-secrets.md` — **accepted**: every instance value is a Worker secret loaded from the gitignored `.dev.vars`; the custom domain is attached once outside the file (`wrangler deploy --domain`, or the dashboard); `wrangler.toml` names no tenant, so a fork edits no tracked file.
 
 ## Project Overview
 
