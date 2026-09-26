@@ -2,7 +2,7 @@
 
 Nudge is self-hosted: one Cloudflare Worker per person or team, serving that owner's repositories (plan decision A12 in `docs/plans/EXECPLAN_NUDGE.md`). This guide takes an operator from a clone to a working `notify` in about half an hour. Nothing tracked in the repository names your instance: the code names no hostname, owner or channel (A13), and `wrangler.toml` holds no value of yours either. Every instance value is a Worker secret that you load from one local, gitignored file (`docs/adr/0004`), so a fork never edits a tracked file and pulls upstream cleanly.
 
-You need: a Cloudflare account (the free plan is enough, and no domain: every Worker gets a free `<name>.<account>.workers.dev` hostname), a Discord server where you can manage webhooks, and a GitHub account or organisation whose repositories will call the instance.
+You need: a Cloudflare account (the free plan is enough, and no domain: every Worker gets a free `<name>.<account>.workers.dev` hostname), a Discord server you administer (the bot has to be added to it), and a GitHub account or organisation whose repositories will call the instance.
 
 ## 1. Clone and fill in the instance file
 
@@ -14,7 +14,7 @@ Fork or clone `Taka499/nudge`, then:
 Edit `.dev.vars` (gitignored; keep it, it is the readable copy of your instance):
 
 - `ALLOWED_OWNERS`: the GitHub users and organisations whose workflows this instance accepts, comma-separated. Anyone else gets 403. This is the only gate (A24).
-- `DISCORD_WEBHOOK_URL`: filled in at step 2.
+- `DISCORD_BOT_TOKEN` and `DISCORD_CHANNEL_ID`: filled in at step 2.
 - `NUDGE_AUDIENCE` stays commented out unless the Worker sits behind something that rewrites the request origin; by default the instance accepts tokens whose audience is its own origin, which is what the actions request.
 
 Check that the Worker builds:
@@ -22,9 +22,9 @@ Check that the Worker builds:
     bun test
     bun run deploy:check
 
-## 2. Discord webhook
+## 2. Discord application and bot
 
-In Discord, open the private channel's settings → Integrations → Webhooks → New Webhook, name it (for example "Nudge") and copy the webhook URL into `.dev.vars`. Anyone holding this URL can post into the channel, so it lives only there and as a Worker secret.
+Every message is posted by a bot that belongs to a Discord application of yours (plan decision A25), the same application that receives button taps from Milestone 2 on. In the [developer portal](https://discord.com/developers/applications): New Application, name it (for example "Nudge"). On the Bot page: Reset Token, and copy the token into `.dev.vars` as `DISCORD_BOT_TOKEN`; it is shown once. On OAuth2 → URL Generator: scope `bot`, permissions View Channels, Send Messages and Embed Links; open the generated URL and add the bot to your server. In Discord, add the bot to the private channel (channel settings → Permissions) and check that View Channel, Send Messages and Embed Links are still allowed for it there, since a channel or category override can take away what the server-level invite granted; then turn on Developer Mode (User Settings → Advanced), right-click the channel → Copy Channel ID, and put it in `.dev.vars` as `DISCORD_CHANNEL_ID`. Anyone holding the bot token can post as the bot, so it lives only in `.dev.vars` and as a Worker secret.
 
 ## 3. Cloudflare token for deploys
 
@@ -49,7 +49,7 @@ Verify that the instance is up and refusing unauthenticated calls:
     curl -si -X POST https://<your hostname>/notify -H 'Content-Type: application/json' -d '{}' | head -1
     # -> HTTP/2 401
 
-Upgrading an instance deployed before 2026-09-27, when `wrangler.toml` still carried `[vars]`: a variable and a secret cannot share a name, so `secret bulk` fails with "Binding name … already in use" until a deploy has removed the variables. Run `bunx wrangler deploy --env "" --secrets-file .dev.vars` once from the updated checkout; it removes them and loads the secrets in the same version.
+Upgrading an instance deployed before 2026-09-27, when `wrangler.toml` still carried `[vars]`: a variable and a secret cannot share a name, so `secret bulk` fails with "Binding name … already in use" until a deploy has removed the variables. Run `bunx wrangler deploy --env "" --secrets-file .dev.vars` once from the updated checkout; it removes them and loads the secrets in the same version. An instance from before Milestone 2 posted through a channel webhook; after adding the two Discord values above, the retired secret can go: `bunx wrangler secret delete --env "" DISCORD_WEBHOOK_URL`.
 
 ## 5. Automatic deploys
 
@@ -87,4 +87,4 @@ Run Acceptance again with that URL as `second_endpoint`. The second instance mus
 
 ## Milestone 2 (not yet available)
 
-`request` and `resolve` need a Discord application with a bot and an Interactions Endpoint URL, and a GitHub App installed on the consuming repositories; their values go into the same `.dev.vars`. This section is written when that milestone ships. One thing to know in advance: GitHub App names are unique across GitHub, so pick a name for yours other than "Nudge".
+`request` and `resolve` need the application of step 2 to have an Interactions Endpoint URL, a list of Discord users allowed to answer, and a GitHub App installed on the consuming repositories; their values go into the same `.dev.vars`. This section is written when that milestone ships. One thing to know in advance: GitHub App names are unique across GitHub, so pick a name for yours other than "Nudge".
