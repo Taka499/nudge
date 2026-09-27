@@ -2,8 +2,7 @@
 # it in, and load it once with
 #     bunx wrangler secret bulk --env "" .dev.vars
 # Every value is a Worker secret, sensitive or not, and survives every deploy; this file is the
-# readable copy. `wrangler dev` reads .dev.vars too. Milestone 2 adds the application's public key,
-# the allowed user ids and the GitHub App values here; see docs/SETUP.md § Milestone 2.
+# readable copy. `wrangler dev` reads .dev.vars too.
 
 # Repository owners (GitHub users or organisations) whose workflows this instance serves, comma-
 # separated. The only gate (plan decision A24): anyone else gets 403; an empty list serves nobody.
@@ -19,3 +18,17 @@ DISCORD_CHANNEL_ID=123456789012345678
 # what the actions request for the `endpoint` you give them. Set it only if the Worker sits behind
 # something that rewrites the request origin, or to pin one hostname when several reach the Worker.
 # NUDGE_AUDIENCE=https://nudge.example.com
+
+# The Discord application's public key (developer portal → General Information → Public Key). Not
+# sensitive; it verifies the signature on every button press delivered to /interactions.
+DISCORD_PUBLIC_KEY=...
+
+# Discord user ids allowed to tap Approve or Decline, comma-separated (Developer Mode → right-click
+# a user → Copy User ID). Nobody else's tap counts (plan decision A5).
+DISCORD_ALLOWED_USERS=123456789012345678
+
+# The GitHub App that sends repository_dispatch on a tap (GitHub → Settings → Developer settings →
+# GitHub Apps; the App ID is on the app's page). It must be installed on every repository that
+# raises requests. The private key GitHub downloads is multi-line, so it goes in separately:
+#     bunx wrangler secret put --env "" GITHUB_APP_PRIVATE_KEY < <downloaded>.private-key.pem
+GITHUB_APP_ID=123456

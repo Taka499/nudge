@@ -60,15 +60,18 @@ Every request is `POST` with `Content-Type: application/json` and `Authorization
 | Call | Body | Answer |
 |---|---|---|
 | `POST /notify` | `{ "title": string, "body": string, "url"?: string }` | `204` |
-| `POST /request` | Milestone 2 | |
+| `POST /request` | `{ "title": string, "body": string, "url"?: string, "commit": string, "image"?: string }` | `201 { "id": string }` |
 | `POST /resolve` | Milestone 2 | |
+| `POST /interactions` | Discord only: Ed25519-signed button presses | |
+
+A `request` posts the same message as `notify` plus Approve and Decline buttons, the repository as the embed's author, and the optional image. `commit` is the full 40-character sha the tap will approve; a consumer's dispatch handler acts on that commit and nothing newer. The answer's `id` is the Discord message id. A tap by an allowed Discord user sends `repository_dispatch` to the repository with `event_type` `nudge-approved` or `nudge-declined` and `client_payload` `{ "id", "commit", "actor" }`, where `actor` is the Discord user id; the message is then edited to say who answered. A tap by anyone else, on an answered message, or on a message older than 7 days changes nothing on GitHub.
 
 Errors carry `{ "error": string }`:
 
 | Status | Meaning |
 |---|---|
-| 400 | body is not valid JSON, or `title`/`body` missing or empty, or `url` not http(s) |
-| 401 | no bearer token, or the token is malformed, expired, for another audience, another issuer, or signed by an unknown key |
+| 400 | body is not valid JSON, or `title`/`body` missing or empty, or `url`/`image` not http(s), or `commit` not a full lowercase sha |
+| 401 | no bearer token, or the token is malformed, expired, for another audience, another issuer, or signed by an unknown key; on `/interactions`, a bad Discord signature or a timestamp more than five minutes from now |
 | 403 | the repository's owner is not served by this instance |
 | 413 | body larger than 64 KiB |
 | 415 | `Content-Type` is not `application/json` |
@@ -88,4 +91,4 @@ bun run lint           # Oxlint + tsgolint: size, complexity and type-escape rul
 bun run deploy:check   # wrangler dry run: builds the Worker without an account
 ```
 
-Layout: `src/oidc.ts` verifies tokens, `src/jwks.ts` caches GitHub's keys, `src/gate.ts` is the owner allowlist, `src/validate.ts` checks bodies, `src/discord.ts` builds messages and posts them through the bot, `src/worker.ts` routes. `actions/` holds the composite actions consumers call. `.dev.vars.example` lists the instance values, which are Worker secrets loaded from a gitignored copy (`docs/adr/0004`); `wrangler.toml` names no tenant. Design, milestones and every decision: `docs/plans/EXECPLAN_NUDGE.md`.
+Layout: `src/oidc.ts` verifies tokens, `src/jwks.ts` caches GitHub's keys, `src/gate.ts` is the owner allowlist, `src/validate.ts` checks bodies, `src/discord.ts` builds messages and posts and edits them through the bot, `src/interactions.ts` verifies and reads button presses, `src/github-app.ts` signs the App JWT and sends the dispatch, `src/worker.ts` routes. `actions/` holds the composite actions consumers call. `.dev.vars.example` lists the instance values, which are Worker secrets loaded from a gitignored copy (`docs/adr/0004`); `wrangler.toml` names no tenant. Design, milestones and every decision: `docs/plans/EXECPLAN_NUDGE.md`.
