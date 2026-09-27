@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { JWKS_MIN_REFRESH_MS, createJwksSource } from "./jwks.ts";
 import { GITHUB_JWKS_URL, type JsonWebKeySet } from "./oidc.ts";
-import { DISCORD_API } from "./discord.ts";
+import { CONTENT_LIMIT, DISCORD_API } from "./discord.ts";
 import { bodyText, requestUrl } from "./testing/http.ts";
 import { AUDIENCE, NOW, SHA, createSigner, mint, standardClaims, type Signer } from "./testing/oidc-fixture.ts";
 import { MAX_BODY_BYTES, bearerToken, handle, type Deps, type Env } from "./worker.ts";
@@ -18,6 +18,10 @@ interface World {
   deps: Deps;
   jwksFetches: number;
   posted: unknown[];
+  /** Bodies of the PATCHes to message 555. */
+  patches: unknown[];
+  /** How often message 555 was fetched. */
+  reads: number;
   /** Milliseconds the Worker asked to wait (the one retry on a Discord 429). */
   slept: number[];
   /** The Authorization header of the last Discord post. */
@@ -26,9 +30,18 @@ interface World {
   elapsedMs: number;
 }
 
-function world(options: { jwks?: () => JsonWebKeySet; discordStatus?: number; discordBody?: unknown; discordFirstAnswer?: Response } = {}): World {
+interface WorldOptions {
+  jwks?: () => JsonWebKeySet;
+  discordStatus?: number;
+  discordBody?: unknown;
+  discordFirstAnswer?: Response;
+  message?: unknown;
+  messageStatus?: number;
+}
+
+function world(options: WorldOptions = {}): World {
   const sleep = async (ms: number): Promise<void> => { w.slept.push(ms); };
-  const w: World = { jwksFetches: 0, posted: [], authorization: null, slept: [], elapsedMs: 0, deps: { fetch: async () => new Response(null), now: () => NOW, jwks: async () => ({ keys: [] }), sleep, waitUntil: () => undefined } };
+  const w: World = { jwksFetches: 0, posted: [], patches: [], reads: 0, authorization: null, slept: [], elapsedMs: 0, deps: { fetch: async () => new Response(null), now: () => NOW, jwks: async () => ({ keys: [] }), sleep, waitUntil: () => undefined } };
   let firstAnswer = options.discordFirstAnswer;
   const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = requestUrl(input);
@@ -42,10 +55,25 @@ function world(options: { jwks?: () => JsonWebKeySet; discordStatus?: number; di
       if (firstAnswer) { const answer = firstAnswer; firstAnswer = undefined; return answer; }
       return options.discordStatus === undefined ? Response.json(options.discordBody ?? { id: "555" }) : new Response(null, { status: options.discordStatus });
     }
+    const message = messageAnswer(url, init, options, w);
+    if (message) return message;
     throw new Error(`unexpected fetch ${url}`);
   };
   w.deps = { fetch: fetcher, now: () => new Date(NOW.getTime() + w.elapsedMs), jwks: createJwksSource(fetcher), sleep, waitUntil: () => undefined };
   return w;
+}
+
+/** The fake Discord's answers for message 555: a GET returns it, a PATCH records the edit. */
+function messageAnswer(url: string, init: RequestInit | undefined, options: WorldOptions, w: World): Response | undefined {
+  if (url !== `${CHANNEL_MESSAGES}/555`) return undefined;
+  if ((init?.method ?? "GET") === "GET") {
+    w.reads += 1;
+    if (options.messageStatus !== undefined) return new Response(null, { status: options.messageStatus });
+    return Response.json(options.message ?? { id: "555", embeds: [{ author: { name: "Taka499/nudge" } }], components: [{ type: 1, components: [] }] });
+  }
+  w.patches.push(JSON.parse(bodyText(init)));
+  w.authorization = new Headers(init?.headers).get("Authorization");
+  return options.discordStatus === undefined ? Response.json({ id: "555" }) : new Response(null, { status: options.discordStatus });
 }
 
 /** `contentType: ""` sends no Content-Type header at all. */
@@ -215,11 +243,61 @@ describe("POST /request", () => {
   });
 });
 
+describe("POST /resolve", () => {
+  const RESOLVE = { id: "555", outcome: "done", detail: "merged #42, promoted to main" };
+  const at = (token: string | undefined, body: unknown): Request => post(token, body, { url: `${AUDIENCE}/resolve` });
+
+  test("writes the outcome and detail onto the request message, removes the buttons, and answers 204", async () => {
+    const w = world();
+    expect((await handle(at(await mint(signer), RESOLVE), ENV, w.deps)).status).toBe(204);
+    expect(w.patches).toEqual([{ content: "**Taka499/nudge** — done: merged #42, promoted to main", components: [], allowed_mentions: { parse: [] } }]);
+    expect(w.authorization).toBe("Bot bot-secret");
+  });
+
+  test("a long detail with mentions is cut to Discord's content limit and pings nobody", async () => {
+    const w = world();
+    const detail = `@everyone <@42> ${"日".repeat(3000)}`;
+    expect((await handle(at(await mint(signer), { ...RESOLVE, detail }), ENV, w.deps)).status).toBe(204);
+    expect(w.patches[0]).toMatchObject({ allowed_mentions: { parse: [] } });
+    const content = w.patches[0] && typeof w.patches[0] === "object" && "content" in w.patches[0] ? w.patches[0].content : undefined;
+    expect(typeof content === "string" ? Array.from(content).length : -1).toBe(CONTENT_LIMIT);
+  });
+
+  test("refuses a message of another repository with 403, and edits nothing", async () => {
+    const w = world({ message: { id: "555", embeds: [{ author: { name: "tia-tools/gakumas-supportcards" } }] } });
+    const response = await handle(at(await mint(signer), RESOLVE), ENV, w.deps);
+    expect(response.status).toBe(403);
+    expect(await errorOf(response)).toContain("another repository");
+    expect(w.patches).toHaveLength(0);
+  });
+
+  test("an id that is no message, or a message that is not a request, is 404", async () => {
+    const token = await mint(signer);
+    expect((await handle(at(token, RESOLVE), ENV, world({ messageStatus: 404 }).deps)).status).toBe(404);
+    expect((await handle(at(token, RESOLVE), ENV, world({ message: { id: "555", content: "hello", embeds: [] } }).deps)).status).toBe(404);
+  });
+
+  test("shares notify's refusals; a bad outcome or id is 400; a refusing Discord is 502", async () => {
+    const w = world();
+    const token = await mint(signer);
+    expect((await handle(at(undefined, RESOLVE), ENV, w.deps)).status).toBe(401);
+    const stranger = await mint(signer, standardClaims({ repository: "someone/else", repository_owner: "someone" }));
+    expect((await handle(at(stranger, RESOLVE), ENV, w.deps)).status).toBe(403);
+    expect((await handle(at(token, { ...RESOLVE, outcome: "merged" }), ENV, w.deps)).status).toBe(400);
+    expect((await handle(at(token, { ...RESOLVE, id: "not-a-snowflake" }), ENV, w.deps)).status).toBe(400);
+    expect((await handle(at(token, RESOLVE), { ...ENV, DISCORD_CHANNEL_ID: undefined }, w.deps)).status).toBe(500);
+    expect(w.patches).toHaveLength(0);
+    expect(w.reads).toBe(0);
+    expect((await handle(at(token, RESOLVE), ENV, world({ messageStatus: 500 }).deps)).status).toBe(502);
+    expect((await handle(at(token, RESOLVE), ENV, world({ discordStatus: 403 }).deps)).status).toBe(502);
+  });
+});
+
 describe("routing", () => {
   test("other paths are 404 and other methods are 405", async () => {
     const w = world();
     expect((await handle(new Request(`${AUDIENCE}/`), ENV, w.deps)).status).toBe(404);
-    expect((await handle(new Request(`${AUDIENCE}/resolve`, { method: "POST" }), ENV, w.deps)).status).toBe(404);
+    expect((await handle(new Request(`${AUDIENCE}/unknown`, { method: "POST" }), ENV, w.deps)).status).toBe(404);
     const get = await handle(new Request(`${AUDIENCE}/notify`), ENV, w.deps);
     expect(get.status).toBe(405);
     expect(get.headers.get("Allow")).toBe("POST");

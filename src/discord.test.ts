@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DISCORD_API, DiscordError, EMBED_LIMITS, MAX_RETRY_AFTER_MS, editMessage, notifyMessage, postMessage, requestMessage, retryDelayMs, retryingOnRateLimit, shortRef, statusLine, truncate } from "./discord.ts";
+import { CONTENT_LIMIT, DISCORD_API, DiscordError, EMBED_LIMITS, MAX_RETRY_AFTER_MS, editMessage, fetchMessage, notifyMessage, postMessage, requestMessage, requestRepository, resolvedPatch, retryDelayMs, retryingOnRateLimit, shortRef, statusLine, truncate } from "./discord.ts";
 import type { WorkflowIdentity } from "./oidc.ts";
 import { bodyText, requestUrl } from "./testing/http.ts";
 import { NOW, SHA } from "./testing/oidc-fixture.ts";
@@ -71,8 +71,45 @@ describe("requestMessage", () => {
 });
 
 describe("statusLine", () => {
-  test("keeps the repository first", () => {
+  test("keeps the repository first and stays within Discord's content limit", () => {
     expect(statusLine("o/r", "approved by <@1>, dispatched")).toBe("**o/r** — approved by <@1>, dispatched");
+    expect(statusLine("o/r", "x".repeat(3000))).toHaveLength(CONTENT_LIMIT);
+  });
+});
+
+describe("resolvedPatch", () => {
+  test("writes the outcome word, the detail when given, and removes the buttons", () => {
+    expect(resolvedPatch("o/r", { id: "5", outcome: "done", detail: "merged #42" })).toEqual({ content: "**o/r** — done: merged #42", components: [], allowed_mentions: { parse: [] } });
+    expect(resolvedPatch("o/r", { id: "5", outcome: "stale" }).content).toBe("**o/r** — stale");
+  });
+});
+
+describe("requestRepository", () => {
+  test("reads the embed author of a request message and nothing else", () => {
+    expect(requestRepository({ embeds: [{ author: { name: "o/r" } }] })).toBe("o/r");
+    expect(requestRepository({ embeds: [{ title: "t" }] })).toBeUndefined();
+    expect(requestRepository({ embeds: [] })).toBeUndefined();
+    expect(requestRepository({ content: "**o/r**" })).toBeUndefined();
+    expect(requestRepository(undefined)).toBeUndefined();
+    expect(requestRepository({ embeds: [{ author: { name: "" } }] })).toBeUndefined();
+  });
+});
+
+describe("fetchMessage", () => {
+  test("reads the message with the bot token; 404 is undefined; anything else throws", async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const message = await fetchMessage({ token: "bot-secret", channelId: "123" }, "555", async (url, init) => {
+      seen.push({ url: requestUrl(url), init });
+      return Response.json({ id: "555", embeds: [] });
+    }, async () => {});
+    expect(message).toEqual({ id: "555", embeds: [] });
+    expect(seen[0]?.url).toBe(`${DISCORD_API}/channels/123/messages/555`);
+    expect(seen[0]?.init?.method).toBeUndefined();
+    expect(new Headers(seen[0]?.init?.headers).get("Authorization")).toBe("Bot bot-secret");
+    const gone = async (): Promise<Response> => new Response(null, { status: 404 });
+    expect(await fetchMessage({ token: "t", channelId: "1" }, "2", gone, async () => {})).toBeUndefined();
+    const refused = async (): Promise<Response> => new Response(null, { status: 403 });
+    expect(await fetchMessage({ token: "t", channelId: "1" }, "2", refused, async () => {}).catch((e: unknown) => e)).toBeInstanceOf(DiscordError);
   });
 });
 

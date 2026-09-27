@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isHttpUrl, parseNotifyInput, parseRequestInput } from "./validate.ts";
+import { isHttpUrl, parseNotifyInput, parseRequestInput, parseResolveInput } from "./validate.ts";
 
 describe("parseNotifyInput", () => {
   test("accepts title and body, with and without url", () => {
@@ -71,5 +71,29 @@ describe("parseRequestInput", () => {
     if (!image.ok) expect(image.error).toContain("image");
     expect(parseRequestInput({ title: "", body: "b", commit: sha }).ok).toBe(false);
     expect(parseRequestInput("nope").ok).toBe(false);
+  });
+});
+
+describe("parseResolveInput", () => {
+  test("takes a message id, one of the three outcomes, and an optional detail", () => {
+    expect(parseResolveInput({ id: "555", outcome: "done" })).toEqual({ ok: true, value: { id: "555", outcome: "done" } });
+    expect(parseResolveInput({ id: "555", outcome: "stale", detail: "head moved" })).toEqual({ ok: true, value: { id: "555", outcome: "stale", detail: "head moved" } });
+    expect(parseResolveInput({ id: "555", outcome: "failed", detail: "tests red" }).ok).toBe(true);
+  });
+
+  test("refuses a missing or non-numeric id, an outcome outside the three, and a blank detail", () => {
+    for (const body of [{ outcome: "done" }, { id: 555, outcome: "done" }, { id: "abc", outcome: "done" }, { id: "", outcome: "done" }]) {
+      const result = parseResolveInput(body);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("id");
+    }
+    for (const outcome of ["merged", "declined", "DONE", 1, undefined]) {
+      const result = parseResolveInput({ id: "555", outcome });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("outcome");
+    }
+    expect(parseResolveInput({ id: "555", outcome: "done", detail: " " }).ok).toBe(false);
+    expect(parseResolveInput({ id: "555", outcome: "done", detail: 3 }).ok).toBe(false);
+    expect(parseResolveInput(null).ok).toBe(false);
   });
 });
