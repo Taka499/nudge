@@ -1,6 +1,6 @@
 # Nudge
 
-Nudge lets a GitHub Actions workflow post to a private Discord channel with no secret stored in the repository: a plain notification today (`notify`), and, from Milestone 2, a question with Approve and Decline buttons (`request`) whose outcome the repository reports back (`resolve`). A tap on Approve sends a `repository_dispatch` to the repository, and the repository's own committed workflow acts. Nudge never merges, deploys or edits anything itself (`docs/adr/0001`).
+Nudge lets a GitHub Actions workflow post to a private Discord channel with no secret stored in the repository: a plain notification (`notify`), and a question with Approve and Decline buttons (`request`) whose outcome the repository reports back (`resolve`). A tap on Approve sends a `repository_dispatch` to the repository, and the repository's own committed workflow acts. Nudge never merges, deploys or edits anything itself (`docs/adr/0001`).
 
 It is a small Cloudflare Worker plus the GitHub Actions that call it. Nudge is a **self-hosted template**: you deploy your own Worker from this repository, and your repositories talk to your instance. `https://nudge.tia.run` is the author's instance and serves only the author's repositories. Setting up an instance takes about half an hour: `docs/SETUP.md`.
 
@@ -53,6 +53,83 @@ updates:
 
 Versions. Every exact version (`v1.0.0`, `v1.1.0`, …) is a GitHub Release, and this repository has immutable releases enabled, so a version's tag can never be moved to other code; pick the one that matches the Worker you deployed. `v1` is a plain tag moved to each compatible version — compatible also with Workers deployed from earlier `v1` versions; a breaking change gets `v2`. `@v1` works if you accept following a movable tag, but it is not the recommended form. The actions contain no nested `uses:`, so pinning one pins all the code it runs (enforced by `src/pinning.test.ts`).
 
+## Ask for an approval
+
+A `request` is a message with Approve and Decline buttons. It names the exact commit a tap approves, so raise one whenever the pull request is created *or updated*: an older message can only ever come back as stale. The job that raises it needs only `id-token: write`, like `notify`.
+
+```yaml
+  ask:
+    needs: sync                                   # the job that opened or updated the pull request
+    if: needs.sync.outputs.head != ''
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: Taka499/nudge/actions/request@v1    # replace with the v1.1.0 commit hash: § Pin by commit hash
+        with:
+          endpoint: https://nudge.tia.run          # your instance
+          title: "New character: ${{ needs.sync.outputs.name }}"
+          body: "Approve to merge into develop and promote to main."
+          url: ${{ needs.sync.outputs.pull-request-url }}
+          commit: ${{ needs.sync.outputs.head }}   # the pull request's head sha, 40 characters
+          image: ${{ needs.sync.outputs.icon-url }} # optional
+```
+
+A tap sends a `repository_dispatch` to the repository with `event_type` `nudge-approved` or `nudge-declined` and `client_payload` `{ id, commit, actor }`. The repository's own committed workflow does the work; Nudge never merges (`docs/adr/0001`). The handler runs in a fresh workflow run, possibly days later, so it starts with `guard`, which finds the one open pull request whose head is still that commit and stops otherwise, with its `stale` output set; a lookup that failed for another reason (GitHub down) stops without it, so the report says `failed`, not `stale`. It merges with `--match-head-commit`, which makes GitHub refuse if the head moved in between, and it reports back with `resolve` on every exit path, in a job of its own with only `id-token: write`:
+
+```yaml
+name: Approved from Discord
+
+on:
+  repository_dispatch:
+    types: [nudge-approved]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    outputs:
+      stale: ${{ steps.guard.outputs.stale }}
+      number: ${{ steps.guard.outputs.pull-request }}
+    steps:
+      - id: guard
+        uses: Taka499/nudge/actions/guard@v1        # replace with the v1.1.0 commit hash
+        with:
+          commit: ${{ github.event.client_payload.commit }}
+      - run: gh pr merge "$NUMBER" --merge --match-head-commit "$COMMIT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ steps.guard.outputs.pull-request }}
+          COMMIT: ${{ github.event.client_payload.commit }}
+
+  report:
+    needs: merge
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: Taka499/nudge/actions/resolve@v1      # replace with the v1.1.0 commit hash
+        with:
+          endpoint: https://nudge.tia.run
+          id: ${{ github.event.client_payload.id }}
+          outcome: ${{ needs.merge.result == 'success' && 'done' || (needs.merge.outputs.stale == 'true' && 'stale' || 'failed') }}
+          detail: ${{ needs.merge.result == 'success' && format('merged #{0}', needs.merge.outputs.number) || 'see the run' }}
+```
+
+`resolve` is the repository's final word, not proof that a tap happened: it is what the message shows from then on, and it removes the buttons. A `nudge-declined` handler is optional; the message already says who declined.
+
+The three actions:
+
+    actions/request   inputs: endpoint, title, body, url?, commit, image?      outputs: id
+    actions/resolve   inputs: endpoint, id, outcome (done | failed | stale), detail?
+    actions/guard     inputs: commit, token?                                    outputs: pull-request, stale
+
+Every action's bash step runs against faked `curl` and `gh` in `src/actions.test.ts`, so the audience, path, body and accepted status are pinned by tests.
+
 ## HTTP contract
 
 Every request is `POST` with `Content-Type: application/json` and `Authorization: Bearer <GitHub OIDC token>`. The token's audience must be the instance origin, for example `https://nudge.tia.run`; the action does this for you.
@@ -94,4 +171,4 @@ bun run lint           # Oxlint + tsgolint: size, complexity and type-escape rul
 bun run deploy:check   # wrangler dry run: builds the Worker without an account
 ```
 
-Layout: `src/oidc.ts` verifies tokens, `src/jwks.ts` caches GitHub's keys, `src/gate.ts` is the owner allowlist, `src/validate.ts` checks bodies, `src/discord.ts` builds messages and posts and edits them through the bot, `src/interactions.ts` verifies and reads button presses, `src/github-app.ts` signs the App JWT and sends the dispatch, `src/worker.ts` routes. `actions/` holds the composite actions consumers call. `.dev.vars.example` lists the instance values, which are Worker secrets loaded from a gitignored copy (`docs/adr/0004`); `wrangler.toml` names no tenant. Design, milestones and every decision: `docs/plans/EXECPLAN_NUDGE.md`.
+Layout: `src/oidc.ts` verifies tokens, `src/jwks.ts` caches GitHub's keys, `src/gate.ts` is the owner allowlist, `src/validate.ts` checks bodies, `src/discord.ts` builds messages and posts and edits them through the bot, `src/interactions.ts` verifies and reads button presses, `src/github-app.ts` signs the App JWT and sends the dispatch, `src/worker.ts` routes. `actions/` holds the composite actions consumers call, each run for real against faked `curl` and `gh` by `src/actions.test.ts`. `.dev.vars.example` lists the instance values, which are Worker secrets loaded from a gitignored copy (`docs/adr/0004`); `wrangler.toml` names no tenant. Design, milestones and every decision: `docs/plans/EXECPLAN_NUDGE.md`.
