@@ -16,6 +16,17 @@ export interface RequestInput extends NotifyInput {
   image?: string;
 }
 
+/** What a repository reports back about a request it acted on (plan decision A27). */
+export interface ResolveInput {
+  /** The request id `POST /request` answered: the Discord message id. */
+  id: string;
+  outcome: Outcome;
+  detail?: string;
+}
+
+export type Outcome = "done" | "failed" | "stale";
+export const OUTCOMES: readonly Outcome[] = ["done", "failed", "stale"];
+
 export type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export function parseNotifyInput(raw: unknown): Parsed<NotifyInput> {
@@ -31,6 +42,18 @@ export function parseRequestInput(raw: unknown): Parsed<RequestInput> {
   if (image === undefined) return { ok: true, value: { ...common.value, commit } };
   if (typeof image !== "string" || !isHttpUrl(image)) return fail("image must be an http(s) URL");
   return { ok: true, value: { ...common.value, commit, image } };
+}
+
+export function parseResolveInput(raw: unknown): Parsed<ResolveInput> {
+  if (!isRecord(raw)) return fail("body must be a JSON object");
+  const id = raw["id"];
+  if (typeof id !== "string" || !/^\d{1,25}$/.test(id)) return fail("id must be the request id: a Discord message id");
+  const outcome = OUTCOMES.find((o) => o === raw["outcome"]);
+  if (outcome === undefined) return fail(`outcome must be one of ${OUTCOMES.join(", ")}`);
+  const detail = raw["detail"];
+  if (detail === undefined) return { ok: true, value: { id, outcome } };
+  if (typeof detail !== "string" || detail.trim() === "") return fail("detail must be a non-empty string when given");
+  return { ok: true, value: { id, outcome, detail } };
 }
 
 function parseCommon(raw: unknown): Parsed<NotifyInput> {

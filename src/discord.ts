@@ -9,10 +9,12 @@
 
 import type { Fetcher } from "./fetcher.ts";
 import type { WorkflowIdentity } from "./oidc.ts";
-import type { NotifyInput, RequestInput } from "./validate.ts";
+import type { NotifyInput, RequestInput, ResolveInput } from "./validate.ts";
 
 /** Discord's embed field limits; longer text is cut with an ellipsis rather than refused. */
 export const EMBED_LIMITS = { title: 256, description: 4096, footer: 2048 } as const;
+/** Discord's limit on a message's `content`. */
+export const CONTENT_LIMIT = 2000;
 
 export interface DiscordEmbed {
   title: string;
@@ -98,7 +100,24 @@ function button(action: TapAction, commit: string): Button {
 
 /** The first line of an answered request: the repository, then what happened. */
 export function statusLine(repository: string, status: string): string {
-  return `**${repository}** — ${status}`;
+  return truncate(`**${repository}** — ${status}`, CONTENT_LIMIT);
+}
+
+/** What `resolve` writes: the outcome word and the consumer's detail, buttons gone (A27). */
+export function resolvedPatch(repository: string, input: ResolveInput): MessagePatch {
+  const status = input.detail === undefined ? input.outcome : `${input.outcome}: ${input.detail}`;
+  return { content: statusLine(repository, status), components: [], allowed_mentions: { parse: [] } };
+}
+
+/** The repository a request message names (its embed author, A21), or undefined for any other message. */
+export function requestRepository(message: unknown): string | undefined {
+  const embeds = field(message, "embeds");
+  const name = field(field(Array.isArray(embeds) ? embeds[0] : undefined, "author"), "name");
+  return typeof name === "string" && name !== "" ? name : undefined;
+}
+
+function field(value: unknown, key: string): unknown {
+  return typeof value === "object" && value !== null && key in value ? Reflect.get(value, key) : undefined;
 }
 
 function embedFor(identity: WorkflowIdentity, input: NotifyInput, now: Date): DiscordEmbed {
@@ -147,6 +166,16 @@ export async function postMessage(bot: BotClient, message: ChannelMessage, fetch
   const id = messageId(await response.json().catch(() => undefined));
   if (id === undefined) throw new DiscordError(response.status, "no message id in the answer");
   return id;
+}
+
+/** One of the bot's messages as Discord returns it, or undefined when there is no such message. */
+export async function fetchMessage(bot: BotClient, messageId: string, fetcher: Fetcher, sleep: Sleep): Promise<unknown> {
+  const response = await retryingOnRateLimit(fetcher, sleep)(`${DISCORD_API}/channels/${bot.channelId}/messages/${messageId}`, {
+    headers: { Authorization: `Bot ${bot.token}` },
+  });
+  if (response.status === 404) return undefined;
+  if (!response.ok) throw new DiscordError(response.status);
+  return response.json();
 }
 
 /** Edits one of the bot's messages; the tap and `resolve` use it to record what happened. */

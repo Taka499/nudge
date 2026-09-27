@@ -1,7 +1,8 @@
 /**
  * Nudge: GitHub Actions → Discord. Serves `POST /notify`, `POST /request` (a message with Approve
- * and Decline buttons) and `POST /interactions` (Discord's delivery of a button press, which
- * dispatches to the repository through the GitHub App).
+ * and Decline buttons), `POST /interactions` (Discord's delivery of a button press, which
+ * dispatches to the repository through the GitHub App) and `POST /resolve` (the repository
+ * reporting what it did, written onto the message).
  *
  * `handle` takes every dependency as an argument (fetch, clock, key set, sleep, waitUntil) so the
  * tests drive the whole request path with keys they generated; the default export wires the live
@@ -9,7 +10,7 @@
  * .dev.vars (plan decision A13, docs/adr/0004).
  */
 
-import { editMessage, notifyMessage, postMessage, requestMessage, statusLine, type BotClient, type MessagePatch, type Sleep } from "./discord.ts";
+import { editMessage, fetchMessage, notifyMessage, postMessage, requestMessage, requestRepository, resolvedPatch, statusLine, type BotClient, type MessagePatch, type Sleep } from "./discord.ts";
 import type { Fetcher } from "./fetcher.ts";
 import { isAllowedOwner, parseAllowedOwners } from "./gate.ts";
 import { dispatchToRepository, type AppCredentials } from "./github-app.ts";
@@ -32,7 +33,7 @@ import {
 } from "./interactions.ts";
 import { createJwksSource, type JwksSource } from "./jwks.ts";
 import { OidcError, verifyGithubToken, type WorkflowIdentity } from "./oidc.ts";
-import { parseNotifyInput, parseRequestInput } from "./validate.ts";
+import { parseNotifyInput, parseRequestInput, parseResolveInput } from "./validate.ts";
 
 export interface Env {
   ALLOWED_OWNERS?: string;
@@ -74,6 +75,7 @@ type Route = (request: Request, env: Env, deps: Deps) => Promise<Response>;
 const ROUTES: Partial<Record<string, Route>> = {
   "/notify": notify,
   "/request": request,
+  "/resolve": resolve,
   "/interactions": interactions,
 };
 
@@ -110,6 +112,29 @@ async function request(request: Request, env: Env, deps: Deps): Promise<Response
   } catch {
     return json(502, { error: "Discord refused the message" });
   }
+}
+
+/** The repository reports the outcome (A27); only the repository the message names may (A21). */
+async function resolve(request: Request, env: Env, deps: Deps): Promise<Response> {
+  const identity = await authorize(request, env, deps);
+  if (identity instanceof Response) return identity;
+  const body = await readJsonBody(request);
+  if (body instanceof Response) return body;
+  const input = parseResolveInput(body.json);
+  if (!input.ok) return json(400, { error: input.error });
+  const bot = botClient(env);
+  if (bot instanceof Response) return bot;
+  try {
+    const message = await fetchMessage(bot, input.value.id, deps.fetch, deps.sleep);
+    if (message === undefined) return json(404, { error: "unknown request" });
+    const repository = requestRepository(message);
+    if (repository === undefined) return json(404, { error: "unknown request" });
+    if (repository !== identity.repository) return json(403, { error: "the request belongs to another repository" });
+    await editMessage(bot, input.value.id, resolvedPatch(repository, input.value), deps.fetch, deps.sleep);
+  } catch {
+    return json(502, { error: "Discord refused the message" });
+  }
+  return new Response(null, { status: 204 });
 }
 
 /** Discord removes an endpoint that accepts a bad signature, so nothing is read before it is checked. */
