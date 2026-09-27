@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DiscordError, EMBED_LIMITS, notifyMessage, postWebhook, shortRef, truncate } from "./discord.ts";
+import { DISCORD_API, DiscordError, EMBED_LIMITS, MAX_RETRY_AFTER_MS, notifyMessage, postMessage, retryDelayMs, retryingOnRateLimit, shortRef, truncate } from "./discord.ts";
 import type { WorkflowIdentity } from "./oidc.ts";
 import { bodyText, requestUrl } from "./testing/http.ts";
 import { NOW, SHA } from "./testing/oidc-fixture.ts";
@@ -71,25 +71,88 @@ describe("shortRef", () => {
   });
 });
 
-describe("postWebhook", () => {
+describe("postMessage", () => {
   const message = notifyMessage(identity, { title: "t", body: "b" }, NOW);
+  const bot = { token: "bot-secret", channelId: "123" };
+  const noSleep = async (): Promise<void> => {};
 
-  test("posts the message as JSON", async () => {
+  test("posts the message as JSON into the channel with the bot token, and returns the message id", async () => {
     const seen: { url: string; init?: RequestInit }[] = [];
-    await postWebhook("https://discord.test/hook", message, async (url, init) => {
+    const id = await postMessage(bot, message, async (url, init) => {
       seen.push({ url: requestUrl(url), init });
-      return new Response(null, { status: 204 });
-    });
+      return Response.json({ id: "555", content: "..." });
+    }, noSleep);
+    expect(id).toBe("555");
     expect(seen).toHaveLength(1);
-    expect(seen[0]?.url).toBe("https://discord.test/hook");
+    expect(seen[0]?.url).toBe(`${DISCORD_API}/channels/123/messages`);
     expect(seen[0]?.init?.method).toBe("POST");
+    expect(new Headers(seen[0]?.init?.headers).get("Authorization")).toBe("Bot bot-secret");
+    expect(new Headers(seen[0]?.init?.headers).get("Content-Type")).toBe("application/json");
     expect(JSON.parse(bodyText(seen[0]?.init))).toEqual(message);
   });
 
-  test("a non-2xx answer throws with the status", async () => {
+  test("a non-2xx answer throws with the status; a 2xx without a message id throws too", async () => {
     const failing = async (): Promise<Response> => new Response("rate limited", { status: 429 });
-    const error = await postWebhook("https://discord.test/hook", message, failing).catch((e: unknown) => e);
+    const error = await postMessage(bot, message, failing, noSleep).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(DiscordError);
     if (error instanceof DiscordError) expect(error.status).toBe(429);
+    const idless = async (): Promise<Response> => Response.json({ ok: true });
+    expect(await postMessage(bot, message, idless, noSleep).catch((e: unknown) => e)).toBeInstanceOf(DiscordError);
+  });
+});
+
+describe("retry on 429", () => {
+  const limited = (retryAfter?: string): Response =>
+    new Response("slow down", { status: 429, headers: retryAfter === undefined ? {} : { "Retry-After": retryAfter } });
+
+  test("retryDelayMs honours Retry-After in seconds up to the cap, and nothing else", () => {
+    expect(retryDelayMs(limited("2"))).toBe(2000);
+    expect(retryDelayMs(limited("0.25"))).toBe(250);
+    expect(retryDelayMs(limited("0"))).toBe(0);
+    expect(retryDelayMs(limited(String(MAX_RETRY_AFTER_MS / 1000)))).toBe(MAX_RETRY_AFTER_MS);
+    expect(retryDelayMs(limited("6"))).toBeUndefined();
+    expect(retryDelayMs(limited())).toBeUndefined();
+    expect(retryDelayMs(limited("soon"))).toBeUndefined();
+    expect(retryDelayMs(limited("-1"))).toBeUndefined();
+    expect(retryDelayMs(limited(""))).toBeUndefined();
+    expect(retryDelayMs(limited(" "))).toBeUndefined();
+    expect(retryDelayMs(limited("0x1"))).toBeUndefined();
+    expect(retryDelayMs(limited("1e3"))).toBeUndefined();
+    expect(retryDelayMs(new Response(null, { status: 503, headers: { "Retry-After": "1" } }))).toBeUndefined();
+    expect(retryDelayMs(new Response(null, { status: 200 }))).toBeUndefined();
+  });
+
+  test("retries exactly once after sleeping the requested time, and gives up on a second 429", async () => {
+    const slept: number[] = [];
+    const sleep = async (ms: number): Promise<void> => { slept.push(ms); };
+    let calls = 0;
+    const answers = [limited("1"), Response.json({ id: "9" })];
+    const fetcher = retryingOnRateLimit(async () => answers[calls++] ?? limited("1"), sleep);
+    expect((await fetcher("https://discord.test")).status).toBe(200);
+    expect(slept).toEqual([1000]);
+    expect(calls).toBe(2);
+    let alwaysCalls = 0;
+    const always = retryingOnRateLimit(async () => { alwaysCalls += 1; return limited("1"); }, sleep);
+    expect((await always("https://discord.test")).status).toBe(429);
+    expect(slept).toEqual([1000, 1000]);
+    expect(alwaysCalls).toBe(2);
+  });
+
+  test("a 429 beyond the cap or without Retry-After is returned at once, without sleeping", async () => {
+    const slept: number[] = [];
+    const sleep = async (ms: number): Promise<void> => { slept.push(ms); };
+    expect((await retryingOnRateLimit(async () => limited("60"), sleep)("https://discord.test")).status).toBe(429);
+    expect((await retryingOnRateLimit(async () => limited(), sleep)("https://discord.test")).status).toBe(429);
+    expect(slept).toEqual([]);
+  });
+
+  test("postMessage succeeds on the retry", async () => {
+    const bot = { token: "bot-secret", channelId: "123" };
+    const message = notifyMessage(identity, { title: "t", body: "b" }, NOW);
+    const noSleep = async (): Promise<void> => {};
+    let calls = 0;
+    const id = await postMessage(bot, message, async () => (calls++ === 0 ? limited("0.5") : Response.json({ id: "777" })), noSleep);
+    expect(id).toBe("777");
+    expect(calls).toBe(2);
   });
 });
