@@ -1,0 +1,50 @@
+# The first step of a repository_dispatch handler (plan decisions A5, A14, A26): finds the one
+# open pull request whose head is exactly the dispatched commit and fails the job otherwise, so a
+# tap never acts on a commit that is no longer what was shown in Discord. The lookup is the check:
+# a pull request whose head moved, or was closed, has no open pull request at that commit. That
+# case sets the output `stale`; a failed lookup (GitHub down, bad token) fails without it, so the
+# handler reports `stale` only when it is true and `failed` otherwise.
+#
+# Needs no Nudge instance. Talks to GitHub with the job's own token (read access to pull requests).
+name: Nudge guard
+description: Stop a dispatch handler unless exactly one open pull request has the dispatched commit as its head
+inputs:
+  commit:
+    description: The commit from the dispatch, github.event.client_payload.commit
+    required: true
+  token:
+    description: Token for the GitHub API; the job's own token by default
+    required: false
+    default: ${{ github.token }}
+outputs:
+  pull-request:
+    description: The number of the open pull request whose head is the commit
+    value: ${{ steps.find.outputs.number }}
+  stale:
+    description: "\"true\" when GitHub was asked and no open pull request (or more than one) has that head; unset when the lookup itself failed, so a handler can report stale or failed"
+    value: ${{ steps.find.outputs.stale }}
+runs:
+  using: composite
+  steps:
+    - name: Find the pull request at the commit
+      id: find
+      shell: bash
+      env:
+        COMMIT: ${{ inputs.commit }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        set -euo pipefail
+        if ! [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::commit must be a full 40-character lowercase sha, got '$COMMIT'" >&2
+          exit 1
+        fi
+        # Every page: a commit is rarely on many pull requests, but "exactly one" must be judged on all of them.
+        numbers="$(gh api --paginate "repos/$GITHUB_REPOSITORY/commits/$COMMIT/pulls" \
+          --jq ".[] | select(.state == \"open\" and .head.sha == \"$COMMIT\") | .number" | xargs)"
+        count="$(wc -w <<<"$numbers" | tr -d ' ')"
+        if [ "$count" != "1" ]; then
+          echo "stale=true" >> "$GITHUB_OUTPUT"
+          echo "::error::expected exactly one open pull request with head $COMMIT, found $count: the head moved, the pull request was closed, or the commit is on two pull requests" >&2
+          exit 1
+        fi
+        echo "number=$numbers" >> "$GITHUB_OUTPUT"

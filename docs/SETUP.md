@@ -1,6 +1,6 @@
 # Setting up a Nudge instance
 
-Nudge is self-hosted: one Cloudflare Worker per person or team, serving that owner's repositories (plan decision A12 in `docs/plans/EXECPLAN_NUDGE.md`). This guide takes an operator from a clone to a working `notify` in about half an hour. Nothing tracked in the repository names your instance: the code names no hostname, owner or channel (A13), and `wrangler.toml` holds no value of yours either. Every instance value is a Worker secret that you load from one local, gitignored file (`docs/adr/0004`), so a fork never edits a tracked file and pulls upstream cleanly.
+Nudge is self-hosted: one Cloudflare Worker per person or team, serving that owner's repositories (plan decision A12 in `docs/plans/EXECPLAN_NUDGE.md`). This guide takes an operator from a clone to a working `notify` in about half an hour (steps 1 to 7), and to approvals from Discord with one more step (8). Nothing tracked in the repository names your instance: the code names no hostname, owner or channel (A13), and `wrangler.toml` holds no value of yours either. Every instance value is a Worker secret that you load from one local, gitignored file (`docs/adr/0004`), so a fork never edits a tracked file and pulls upstream cleanly.
 
 You need: a Cloudflare account (the free plan is enough, and no domain: every Worker gets a free `<name>.<account>.workers.dev` hostname), a Discord server you administer (the bot has to be added to it), and a GitHub account or organisation whose repositories will call the instance.
 
@@ -85,6 +85,17 @@ To also prove that nothing ties the code to one hostname, deploy a second, throw
 
 Run Acceptance again with that URL as `second_endpoint`. The second instance must refuse a token minted for the first instance (401 `wrong audience`) and must accept a token for its own origin far enough to reach the owner gate (403). Delete it afterwards with `bunx wrangler delete --env acceptance`.
 
-## Milestone 2 (not yet available)
+## 8. Approvals: the endpoint, the allowlist and the GitHub App
 
-`request` and `resolve` need the application of step 2 to have an Interactions Endpoint URL, a list of Discord users allowed to answer, and a GitHub App installed on the consuming repositories; their values go into the same `.dev.vars`. This section is written when that milestone ships. One thing to know in advance: GitHub App names are unique across GitHub, so pick a name for yours other than "Nudge".
+`request` and `resolve` need three more things from the application of step 2, one GitHub App, and a deploy in between.
+
+**From the Discord application.** On General Information copy the Public Key into `.dev.vars` as `DISCORD_PUBLIC_KEY`; it lets the instance check that every button press really comes from Discord. Put the Discord user ids allowed to tap Approve or Decline in `DISCORD_ALLOWED_USERS`, comma-separated (Developer Mode → right-click a user → Copy User ID); anyone else's tap gets a private "not on the list" reply and changes nothing.
+
+**A GitHub App.** GitHub → Settings → Developer settings → GitHub Apps → New GitHub App. App names are unique across GitHub, so pick your own, not "Nudge". Homepage: anything. Untick "Active" under Webhook. Repository permissions: Contents, Read and write, nothing else; it is what `repository_dispatch` needs. "Where can this GitHub App be installed?": "Only on this account" if every repository that raises requests belongs to the account creating the App, otherwise "Any account" (a stranger installing it gains nothing: their repositories still fail the owner list, A24). Create it, note the App ID into `.dev.vars` as `GITHUB_APP_ID`, generate a private key, and install the App on every repository that will raise requests. The key GitHub downloads is multi-line, so it goes in on its own:
+
+    bunx wrangler secret bulk --env "" .dev.vars
+    bunx wrangler secret put --env "" GITHUB_APP_PRIVATE_KEY < <downloaded>.private-key.pem
+
+**The endpoint.** Once the Worker is deployed with those values, back in the Discord application's General Information set Interactions Endpoint URL to `https://<your hostname>/interactions` and save. Discord sends a signed PING at that moment and refuses to save unless the instance answers it. From then on a tap reaches the Worker. Discord also removes an endpoint that accepts a bad signature, which this one never does.
+
+**Then, in each repository**, the `request` step and the dispatch handler from `README.md` § Ask for an approval. The first real request proves the path end to end: tap Approve, watch the handler run, and see the message change to "done".
