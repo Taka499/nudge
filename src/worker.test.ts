@@ -3,7 +3,7 @@ import { JWKS_MIN_REFRESH_MS, createJwksSource } from "./jwks.ts";
 import { GITHUB_JWKS_URL, type JsonWebKeySet } from "./oidc.ts";
 import { DISCORD_API } from "./discord.ts";
 import { bodyText, requestUrl } from "./testing/http.ts";
-import { AUDIENCE, NOW, createSigner, mint, standardClaims, type Signer } from "./testing/oidc-fixture.ts";
+import { AUDIENCE, NOW, SHA, createSigner, mint, standardClaims, type Signer } from "./testing/oidc-fixture.ts";
 import { MAX_BODY_BYTES, bearerToken, handle, type Deps, type Env } from "./worker.ts";
 
 const CHANNEL_MESSAGES = `${DISCORD_API}/channels/123/messages`;
@@ -28,7 +28,7 @@ interface World {
 
 function world(options: { jwks?: () => JsonWebKeySet; discordStatus?: number; discordBody?: unknown; discordFirstAnswer?: Response } = {}): World {
   const sleep = async (ms: number): Promise<void> => { w.slept.push(ms); };
-  const w: World = { jwksFetches: 0, posted: [], authorization: null, slept: [], elapsedMs: 0, deps: { fetch: async () => new Response(null), now: () => NOW, jwks: async () => ({ keys: [] }), sleep } };
+  const w: World = { jwksFetches: 0, posted: [], authorization: null, slept: [], elapsedMs: 0, deps: { fetch: async () => new Response(null), now: () => NOW, jwks: async () => ({ keys: [] }), sleep, waitUntil: () => undefined } };
   let firstAnswer = options.discordFirstAnswer;
   const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = requestUrl(input);
@@ -44,7 +44,7 @@ function world(options: { jwks?: () => JsonWebKeySet; discordStatus?: number; di
     }
     throw new Error(`unexpected fetch ${url}`);
   };
-  w.deps = { fetch: fetcher, now: () => new Date(NOW.getTime() + w.elapsedMs), jwks: createJwksSource(fetcher), sleep };
+  w.deps = { fetch: fetcher, now: () => new Date(NOW.getTime() + w.elapsedMs), jwks: createJwksSource(fetcher), sleep, waitUntil: () => undefined };
   return w;
 }
 
@@ -181,8 +181,37 @@ describe("POST /notify", () => {
   });
 
   test("an unreachable JWKS endpoint is 503", async () => {
-    const deps: Deps = { fetch: async () => new Response(null), now: () => NOW, jwks: async () => { throw new Error("down"); }, sleep: async () => {} };
+    const deps: Deps = { fetch: async () => new Response(null), now: () => NOW, jwks: async () => { throw new Error("down"); }, sleep: async () => {}, waitUntil: () => undefined };
     expect((await handle(post(await mint(signer), INPUT), ENV, deps)).status).toBe(503);
+  });
+});
+
+describe("POST /request", () => {
+  const REQUEST = { title: "New character: Aoi", body: "Icon below", commit: SHA, image: "https://cdn.example.test/aoi.png" };
+
+  test("posts the question with Approve and Decline buttons and answers 201 with the message id", async () => {
+    const w = world();
+    const response = await handle(post(await mint(signer), REQUEST, { url: `${AUDIENCE}/request` }), ENV, w.deps);
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ id: "555" });
+    expect(w.posted[0]).toMatchObject({
+      content: "**Taka499/nudge**",
+      embeds: [{ title: "New character: Aoi", author: { name: "Taka499/nudge" }, image: { url: REQUEST.image } }],
+      components: [{ type: 1, components: [{ custom_id: `approve:${SHA}` }, { custom_id: `decline:${SHA}` }] }],
+    });
+  });
+
+  test("shares notify's refusals, and refuses a request without a full commit", async () => {
+    const w = world();
+    const token = await mint(signer);
+    expect((await handle(post(undefined, REQUEST, { url: `${AUDIENCE}/request` }), ENV, w.deps)).status).toBe(401);
+    const stranger = await mint(signer, standardClaims({ repository: "someone/else", repository_owner: "someone" }));
+    expect((await handle(post(stranger, REQUEST, { url: `${AUDIENCE}/request` }), ENV, w.deps)).status).toBe(403);
+    const short = await handle(post(token, { ...REQUEST, commit: "abc123" }, { url: `${AUDIENCE}/request` }), ENV, w.deps);
+    expect(short.status).toBe(400);
+    expect(await errorOf(short)).toContain("commit");
+    expect((await handle(post(token, REQUEST, { url: `${AUDIENCE}/request` }), { ...ENV, DISCORD_BOT_TOKEN: undefined }, w.deps)).status).toBe(500);
+    expect(w.posted).toHaveLength(0);
   });
 });
 
@@ -190,7 +219,7 @@ describe("routing", () => {
   test("other paths are 404 and other methods are 405", async () => {
     const w = world();
     expect((await handle(new Request(`${AUDIENCE}/`), ENV, w.deps)).status).toBe(404);
-    expect((await handle(new Request(`${AUDIENCE}/request`, { method: "POST" }), ENV, w.deps)).status).toBe(404);
+    expect((await handle(new Request(`${AUDIENCE}/resolve`, { method: "POST" }), ENV, w.deps)).status).toBe(404);
     const get = await handle(new Request(`${AUDIENCE}/notify`), ENV, w.deps);
     expect(get.status).toBe(405);
     expect(get.headers.get("Allow")).toBe("POST");
