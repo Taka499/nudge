@@ -66,7 +66,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: Taka499/nudge/actions/notify@b706447babea35d3b95dcdbae7ec03f007cb2b2a # v1.0.0
+      - uses: Taka499/nudge/actions/notify@d9f7f1ac185050506d526532a0e24861564422cf # v1.1.0
         with:
           endpoint: https://<your hostname>
           title: "Nightly build"
