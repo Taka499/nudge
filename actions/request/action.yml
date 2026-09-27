@@ -1,0 +1,77 @@
+# Asks a question in Discord with Approve and Decline buttons, through a Nudge instance (plan
+# decisions A4, A14, A21). The answer's `id` is the request id: the Discord message id, which the
+# repository's dispatch handler passes to `actions/resolve` when it has acted.
+#
+# The calling job needs `permissions: id-token: write`: the action requests a GitHub OIDC token
+# whose audience is the instance origin you pass as `endpoint`, so no secret is stored anywhere
+# (docs/adr/0002). `commit` is the full sha a tap approves; the handler acts on that commit and
+# nothing newer (A5, A26), so raise a new request whenever the pull request is created or updated.
+name: Nudge request
+description: Post a question with Approve and Decline buttons to a Discord channel through a Nudge instance
+inputs:
+  endpoint:
+    description: Origin of the Nudge instance, e.g. https://nudge.example.com
+    required: true
+  title:
+    description: One line, shown as the message title
+    required: true
+  body:
+    description: The message text; long text is truncated by the instance
+    required: true
+  url:
+    description: Link for the title, usually the pull request; defaults to this workflow run
+    required: false
+    default: ""
+  commit:
+    description: The full 40-character sha a tap on Approve approves (the pull request's head)
+    required: true
+  image:
+    description: An http(s) image URL shown in the message, e.g. the icon to check
+    required: false
+    default: ""
+outputs:
+  id:
+    description: The request id (the Discord message id), for actions/resolve
+    value: ${{ steps.post.outputs.id }}
+runs:
+  using: composite
+  steps:
+    - name: Post to Nudge
+      id: post
+      shell: bash
+      env:
+        ENDPOINT: ${{ inputs.endpoint }}
+        TITLE: ${{ inputs.title }}
+        BODY: ${{ inputs.body }}
+        LINK: ${{ inputs.url }}
+        COMMIT: ${{ inputs.commit }}
+        IMAGE: ${{ inputs.image }}
+      run: |
+        set -euo pipefail
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::error::the job needs 'permissions: id-token: write' to call Nudge" >&2
+          exit 1
+        fi
+        endpoint="${ENDPOINT%/}"
+        token="$(curl -sSf -G "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+          -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          --data-urlencode "audience=$endpoint" | jq -r .value)"
+        payload="$(jq -cn --arg title "$TITLE" --arg body "$BODY" --arg url "$LINK" --arg commit "$COMMIT" --arg image "$IMAGE" \
+          '{title: $title, body: $body, commit: $commit}
+           + (if $url == "" then {} else {url: $url} end)
+           + (if $image == "" then {} else {image: $image} end)')"
+        status="$(curl -sS -o "$RUNNER_TEMP/nudge-response" -w '%{http_code}' \
+          -X POST "$endpoint/request" \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          --data "$payload")"
+        if [ "$status" != "201" ]; then
+          echo "::error::Nudge answered $status: $(cat "$RUNNER_TEMP/nudge-response")" >&2
+          exit 1
+        fi
+        id="$(jq -r '.id // empty' "$RUNNER_TEMP/nudge-response")"
+        if [ -z "$id" ]; then
+          echo "::error::Nudge answered 201 without a request id" >&2
+          exit 1
+        fi
+        echo "id=$id" >> "$GITHUB_OUTPUT"

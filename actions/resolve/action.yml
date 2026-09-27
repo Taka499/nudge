@@ -1,0 +1,54 @@
+# Reports what the repository did with a request (plan decision A27): the instance writes the
+# outcome and the detail onto the Discord message and removes its buttons. Run it on every exit
+# path of the dispatch handler: `done` when the action succeeded, `failed` when it did not, and
+# `stale` when `actions/guard` stopped it because the pull request's head had moved.
+#
+# The calling job needs `permissions: id-token: write` (docs/adr/0002); only the repository that
+# raised the request may resolve it (A21).
+name: Nudge resolve
+description: Write the outcome of a request onto its Discord message through a Nudge instance
+inputs:
+  endpoint:
+    description: Origin of the Nudge instance, e.g. https://nudge.example.com
+    required: true
+  id:
+    description: The request id from actions/request, carried in the dispatch as client_payload.id
+    required: true
+  outcome:
+    description: One of done, failed, stale
+    required: true
+  detail:
+    description: A short line shown after the outcome, e.g. "merged #42"
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Resolve on Nudge
+      shell: bash
+      env:
+        ENDPOINT: ${{ inputs.endpoint }}
+        ID: ${{ inputs.id }}
+        OUTCOME: ${{ inputs.outcome }}
+        DETAIL: ${{ inputs.detail }}
+      run: |
+        set -euo pipefail
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::error::the job needs 'permissions: id-token: write' to call Nudge" >&2
+          exit 1
+        fi
+        endpoint="${ENDPOINT%/}"
+        token="$(curl -sSf -G "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+          -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          --data-urlencode "audience=$endpoint" | jq -r .value)"
+        payload="$(jq -cn --arg id "$ID" --arg outcome "$OUTCOME" --arg detail "$DETAIL" \
+          '{id: $id, outcome: $outcome} + (if $detail == "" then {} else {detail: $detail} end)')"
+        status="$(curl -sS -o "$RUNNER_TEMP/nudge-response" -w '%{http_code}' \
+          -X POST "$endpoint/resolve" \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          --data "$payload")"
+        if [ "$status" != "204" ]; then
+          echo "::error::Nudge answered $status: $(cat "$RUNNER_TEMP/nudge-response")" >&2
+          exit 1
+        fi
