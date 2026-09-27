@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DISCORD_API, DiscordError, EMBED_LIMITS, MAX_RETRY_AFTER_MS, notifyMessage, postMessage, retryDelayMs, retryingOnRateLimit, shortRef, truncate } from "./discord.ts";
+import { DISCORD_API, DiscordError, EMBED_LIMITS, MAX_RETRY_AFTER_MS, editMessage, notifyMessage, postMessage, requestMessage, retryDelayMs, retryingOnRateLimit, shortRef, statusLine, truncate } from "./discord.ts";
 import type { WorkflowIdentity } from "./oidc.ts";
 import { bodyText, requestUrl } from "./testing/http.ts";
 import { NOW, SHA } from "./testing/oidc-fixture.ts";
@@ -47,6 +47,52 @@ describe("notifyMessage", () => {
     const message = notifyMessage(identity, { title: "t", body: "@everyone look" }, NOW);
     expect(message.allowed_mentions).toEqual({ parse: [] });
     expect(message.embeds[0]?.description).toBe("@everyone look");
+  });
+});
+
+describe("requestMessage", () => {
+  test("is the notify message plus the repository as embed author, the image, and two buttons naming the commit", () => {
+    const message = requestMessage(identity, { title: "New character", body: "Look at the icon", commit: SHA, image: "https://cdn.test/i.png" }, NOW);
+    const plain = notifyMessage(identity, { title: "New character", body: "Look at the icon" }, NOW);
+    expect(message.content).toBe(plain.content);
+    const base = plain.embeds[0];
+    if (!base) throw new Error("notify message has no embed");
+    expect(message.embeds[0]).toEqual({ ...base, author: { name: identity.repository }, image: { url: "https://cdn.test/i.png" } });
+    expect(message.components).toEqual([
+      { type: 1, components: [{ type: 2, style: 3, label: "Approve", custom_id: `approve:${SHA}` }, { type: 2, style: 4, label: "Decline", custom_id: `decline:${SHA}` }] },
+    ]);
+    expect(message.allowed_mentions).toEqual({ parse: [] });
+  });
+
+  test("has no image field without an image", () => {
+    const message = requestMessage(identity, { title: "t", body: "b", commit: SHA }, NOW);
+    expect(message.embeds[0]).not.toHaveProperty("image");
+  });
+});
+
+describe("statusLine", () => {
+  test("keeps the repository first", () => {
+    expect(statusLine("o/r", "approved by <@1>, dispatched")).toBe("**o/r** — approved by <@1>, dispatched");
+  });
+});
+
+describe("editMessage", () => {
+  test("patches the message in the channel with the bot token and the retry wrapper", async () => {
+    const seen: { url: string; init?: RequestInit }[] = [];
+    const slept: number[] = [];
+    let calls = 0;
+    await editMessage({ token: "bot-secret", channelId: "123" }, "555", { content: "c", components: [], allowed_mentions: { parse: [] } }, async (url, init) => {
+      seen.push({ url: requestUrl(url), init });
+      return calls++ === 0 ? new Response(null, { status: 429, headers: { "Retry-After": "1" } }) : Response.json({ id: "555" });
+    }, async (ms) => { slept.push(ms); });
+    expect(seen).toHaveLength(2);
+    expect(seen[0]?.url).toBe(`${DISCORD_API}/channels/123/messages/555`);
+    expect(seen[0]?.init?.method).toBe("PATCH");
+    expect(new Headers(seen[0]?.init?.headers).get("Authorization")).toBe("Bot bot-secret");
+    expect(JSON.parse(bodyText(seen[0]?.init))).toEqual({ content: "c", components: [], allowed_mentions: { parse: [] } });
+    expect(slept).toEqual([1000]);
+    const refused = async (): Promise<Response> => new Response(null, { status: 403 });
+    expect(await editMessage({ token: "t", channelId: "1" }, "2", { allowed_mentions: { parse: [] } }, refused, async () => {}).catch((e: unknown) => e)).toBeInstanceOf(DiscordError);
   });
 });
 

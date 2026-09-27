@@ -1,13 +1,15 @@
 /**
- * Discord messages. `notifyMessage` is a pure builder returning exactly the JSON Discord expects;
- * `postMessage` is the one thin fetch, through the application's bot (plan decision A25: one
- * Discord path for every call). Every message starts with the repository name (A4) so one
- * channel can serve many repositories (A9).
+ * Discord messages. `notifyMessage` and `requestMessage` are pure builders returning exactly the
+ * JSON Discord expects; `postMessage` and `editMessage` are the thin fetches, through the
+ * application's bot (plan decision A25: one Discord path for every call). Every message starts
+ * with the repository name (A4) so one channel can serve many repositories (A9). A request
+ * message is also the request's state (A21): the repository sits in the embed's author field and
+ * the commit in the buttons' custom_id, and the buttons' presence means "not yet answered".
  */
 
 import type { Fetcher } from "./fetcher.ts";
 import type { WorkflowIdentity } from "./oidc.ts";
-import type { NotifyInput } from "./validate.ts";
+import type { NotifyInput, RequestInput } from "./validate.ts";
 
 /** Discord's embed field limits; longer text is cut with an ellipsis rather than refused. */
 export const EMBED_LIMITS = { title: 256, description: 4096, footer: 2048 } as const;
@@ -18,7 +20,30 @@ export interface DiscordEmbed {
   url: string;
   footer: { text: string };
   timestamp: string;
+  /** The repository, as structured data a tap can read back (A21). */
+  author?: { name: string };
+  image?: { url: string };
 }
+
+export interface Button {
+  type: 2;
+  style: number;
+  label: string;
+  custom_id: string;
+}
+
+export interface ActionRow {
+  type: 1;
+  components: Button[];
+}
+
+export type TapAction = "approve" | "decline";
+
+/** Discord button styles: 3 is green (success), 4 is red (danger). */
+const BUTTONS: Record<TapAction, { style: number; label: string }> = {
+  approve: { style: 3, label: "Approve" },
+  decline: { style: 4, label: "Decline" },
+};
 
 /** Where the bot posts: its token and the one channel (Worker secrets, docs/adr/0004). */
 export interface BotClient {
@@ -38,21 +63,51 @@ export interface ChannelMessage {
   embeds: DiscordEmbed[];
   /** Never ping anyone, whatever a consumer writes in the body. */
   allowed_mentions: { parse: never[] };
+  components?: ActionRow[];
+}
+
+/** What an edit changes; `components: []` removes the buttons, which answers the request (A21). */
+export interface MessagePatch {
+  content?: string;
+  components?: ActionRow[];
+  allowed_mentions: { parse: never[] };
 }
 
 export function notifyMessage(identity: WorkflowIdentity, input: NotifyInput, now: Date): ChannelMessage {
+  return { content: `**${identity.repository}**`, embeds: [embedFor(identity, input, now)], allowed_mentions: { parse: [] } };
+}
+
+export function requestMessage(identity: WorkflowIdentity, input: RequestInput, now: Date): ChannelMessage {
+  const embed: DiscordEmbed = { ...embedFor(identity, input, now), author: { name: identity.repository } };
+  if (input.image !== undefined) embed.image = { url: input.image };
   return {
     content: `**${identity.repository}**`,
-    embeds: [
-      {
-        title: truncate(input.title, EMBED_LIMITS.title),
-        description: truncate(input.body, EMBED_LIMITS.description),
-        url: input.url ?? identity.runUrl,
-        footer: { text: truncate(footerText(identity), EMBED_LIMITS.footer) },
-        timestamp: now.toISOString(),
-      },
-    ],
+    embeds: [embed],
     allowed_mentions: { parse: [] },
+    components: [{ type: 1, components: [button("approve", input.commit), button("decline", input.commit)] }],
+  };
+}
+
+export function customId(action: TapAction, commit: string): string {
+  return `${action}:${commit}`;
+}
+
+function button(action: TapAction, commit: string): Button {
+  return { type: 2, ...BUTTONS[action], custom_id: customId(action, commit) };
+}
+
+/** The first line of an answered request: the repository, then what happened. */
+export function statusLine(repository: string, status: string): string {
+  return `**${repository}** — ${status}`;
+}
+
+function embedFor(identity: WorkflowIdentity, input: NotifyInput, now: Date): DiscordEmbed {
+  return {
+    title: truncate(input.title, EMBED_LIMITS.title),
+    description: truncate(input.body, EMBED_LIMITS.description),
+    url: input.url ?? identity.runUrl,
+    footer: { text: truncate(footerText(identity), EMBED_LIMITS.footer) },
+    timestamp: now.toISOString(),
   };
 }
 
@@ -92,6 +147,16 @@ export async function postMessage(bot: BotClient, message: ChannelMessage, fetch
   const id = messageId(await response.json().catch(() => undefined));
   if (id === undefined) throw new DiscordError(response.status, "no message id in the answer");
   return id;
+}
+
+/** Edits one of the bot's messages; the tap and `resolve` use it to record what happened. */
+export async function editMessage(bot: BotClient, messageId: string, patch: MessagePatch, fetcher: Fetcher, sleep: Sleep): Promise<void> {
+  const response = await retryingOnRateLimit(fetcher, sleep)(`${DISCORD_API}/channels/${bot.channelId}/messages/${messageId}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bot ${bot.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!response.ok) throw new DiscordError(response.status);
 }
 
 /** Wraps a fetcher so that one 429 with a short `Retry-After` is retried once; anything else passes through. */

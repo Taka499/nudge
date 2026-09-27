@@ -10,23 +10,47 @@ export interface NotifyInput {
   url?: string;
 }
 
+/** A `request` names the exact commit a tap approves (A5) and may show an image (A7). */
+export interface RequestInput extends NotifyInput {
+  commit: string;
+  image?: string;
+}
+
 export type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export function parseNotifyInput(raw: unknown): Parsed<NotifyInput> {
+  return parseCommon(raw);
+}
+
+export function parseRequestInput(raw: unknown): Parsed<RequestInput> {
+  const common = parseCommon(raw);
+  if (!common.ok || !isRecord(raw)) return common.ok ? fail("body must be a JSON object") : common;
+  const commit = raw["commit"];
+  if (typeof commit !== "string" || !isFullSha(commit)) return fail("commit must be a 40-character lowercase hex sha");
+  const image = raw["image"];
+  if (image === undefined) return { ok: true, value: { ...common.value, commit } };
+  if (typeof image !== "string" || !isHttpUrl(image)) return fail("image must be an http(s) URL");
+  return { ok: true, value: { ...common.value, commit, image } };
+}
+
+function parseCommon(raw: unknown): Parsed<NotifyInput> {
   if (!isRecord(raw)) return fail("body must be a JSON object");
-  const record = raw;
-  const title = nonEmptyString(record["title"]);
+  const title = nonEmptyString(raw["title"]);
   if (title === undefined) return fail("title must be a non-empty string");
-  const body = nonEmptyString(record["body"]);
+  const body = nonEmptyString(raw["body"]);
   if (body === undefined) return fail("body must be a non-empty string");
-  const url = record["url"];
-  if (url === undefined) return ok({ title, body });
+  const url = raw["url"];
+  if (url === undefined) return { ok: true, value: { title, body } };
   if (typeof url !== "string" || !isHttpUrl(url)) return fail("url must be an http(s) URL");
-  return ok({ title, body, url });
+  return { ok: true, value: { title, body, url } };
 }
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+export function isFullSha(value: string): boolean {
+  return /^[0-9a-f]{40}$/.test(value);
 }
 
 export function isHttpUrl(value: string): boolean {
@@ -42,10 +66,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function ok(value: NotifyInput): Parsed<NotifyInput> {
-  return { ok: true, value };
-}
-
-function fail(error: string): Parsed<NotifyInput> {
+function fail(error: string): { ok: false; error: string } {
   return { ok: false, error };
 }

@@ -1,18 +1,38 @@
 /**
- * Nudge: GitHub Actions → Discord. Milestone 1 serves `POST /notify`.
+ * Nudge: GitHub Actions → Discord. Serves `POST /notify`, `POST /request` (a message with Approve
+ * and Decline buttons) and `POST /interactions` (Discord's delivery of a button press, which
+ * dispatches to the repository through the GitHub App).
  *
- * `handle` takes every dependency as an argument (fetch, clock, key set) so `worker.test.ts`
- * drives the whole request path with keys it generated; the default export wires the live ones.
- * Nothing here names a hostname, owner or channel: those are Worker secrets loaded from
+ * `handle` takes every dependency as an argument (fetch, clock, key set, sleep, waitUntil) so the
+ * tests drive the whole request path with keys they generated; the default export wires the live
+ * ones. Nothing here names a hostname, owner or channel: those are Worker secrets loaded from
  * .dev.vars (plan decision A13, docs/adr/0004).
  */
 
-import { notifyMessage, postMessage, type BotClient, type Sleep } from "./discord.ts";
+import { editMessage, notifyMessage, postMessage, requestMessage, statusLine, type BotClient, type MessagePatch, type Sleep } from "./discord.ts";
 import type { Fetcher } from "./fetcher.ts";
 import { isAllowedOwner, parseAllowedOwners } from "./gate.ts";
+import { dispatchToRepository, type AppCredentials } from "./github-app.ts";
+import {
+  EPHEMERAL_FLAG,
+  INTERACTION_COMPONENT,
+  INTERACTION_PING,
+  RESPONSE_CHANNEL_MESSAGE,
+  RESPONSE_DEFERRED_UPDATE,
+  RESPONSE_PONG,
+  RESPONSE_UPDATE_MESSAGE,
+  interactionType,
+  isFreshTimestamp,
+  parseAllowedUsers,
+  parseTap,
+  settlePatch,
+  tapVerdict,
+  verifyDiscordSignature,
+  type Tap,
+} from "./interactions.ts";
 import { createJwksSource, type JwksSource } from "./jwks.ts";
 import { OidcError, verifyGithubToken, type WorkflowIdentity } from "./oidc.ts";
-import { parseNotifyInput } from "./validate.ts";
+import { parseNotifyInput, parseRequestInput } from "./validate.ts";
 
 export interface Env {
   ALLOWED_OWNERS?: string;
@@ -20,6 +40,13 @@ export interface Env {
   /** The Discord application's bot token and the channel it posts to (A25). */
   DISCORD_BOT_TOKEN?: string;
   DISCORD_CHANNEL_ID?: string;
+  /** The Discord application's public key, hex; verifies `/interactions`. */
+  DISCORD_PUBLIC_KEY?: string;
+  /** Discord user ids allowed to tap Approve or Decline, comma-separated (A5). */
+  DISCORD_ALLOWED_USERS?: string;
+  /** The GitHub App that sends `repository_dispatch` (A2). */
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
 }
 
 export interface Deps {
@@ -28,30 +55,35 @@ export interface Deps {
   jwks: JwksSource;
   /** Waits; injected so tests never sleep. Used for the one retry on a Discord 429. */
   sleep: Sleep;
+  /** Keeps work running after the response is sent: a tap must be answered within 3 s, the dispatch takes longer. */
+  waitUntil: (work: Promise<unknown>) => void;
 }
 
 /** Largest request body accepted, in bytes. */
 export const MAX_BODY_BYTES = 64 * 1024;
 
 export async function handle(request: Request, env: Env, deps: Deps): Promise<Response> {
-  const path = new URL(request.url).pathname;
-  if (path !== "/notify") return json(404, { error: "not found" });
+  const route = ROUTES[new URL(request.url).pathname];
+  if (!route) return json(404, { error: "not found" });
   if (request.method !== "POST") return json(405, { error: "method not allowed" }, { Allow: "POST" });
-  return notify(request, env, deps);
+  return route(request, env, deps);
 }
 
-async function notify(request: Request, env: Env, deps: Deps): Promise<Response> {
-  const identity = await authenticate(request, env, deps);
-  if (identity instanceof Response) return identity;
-  if (!isAllowedOwner(identity.owner, parseAllowedOwners(env.ALLOWED_OWNERS))) {
-    return json(403, { error: `repository owner ${identity.owner} is not served by this instance` });
-  }
+type Route = (request: Request, env: Env, deps: Deps) => Promise<Response>;
 
+const ROUTES: Partial<Record<string, Route>> = {
+  "/notify": notify,
+  "/request": request,
+  "/interactions": interactions,
+};
+
+async function notify(request: Request, env: Env, deps: Deps): Promise<Response> {
+  const identity = await authorize(request, env, deps);
+  if (identity instanceof Response) return identity;
   const body = await readJsonBody(request);
   if (body instanceof Response) return body;
   const input = parseNotifyInput(body.json);
   if (!input.ok) return json(400, { error: input.error });
-
   const bot = botClient(env);
   if (bot instanceof Response) return bot;
   try {
@@ -62,10 +94,105 @@ async function notify(request: Request, env: Env, deps: Deps): Promise<Response>
   return new Response(null, { status: 204 });
 }
 
+/** Posts the question with its buttons; the message id is the request id (A21). */
+async function request(request: Request, env: Env, deps: Deps): Promise<Response> {
+  const identity = await authorize(request, env, deps);
+  if (identity instanceof Response) return identity;
+  const body = await readJsonBody(request);
+  if (body instanceof Response) return body;
+  const input = parseRequestInput(body.json);
+  if (!input.ok) return json(400, { error: input.error });
+  const bot = botClient(env);
+  if (bot instanceof Response) return bot;
+  try {
+    const id = await postMessage(bot, requestMessage(identity, input.value, deps.now()), deps.fetch, deps.sleep);
+    return Response.json({ id }, { status: 201 });
+  } catch {
+    return json(502, { error: "Discord refused the message" });
+  }
+}
+
+/** Discord removes an endpoint that accepts a bad signature, so nothing is read before it is checked. */
+async function interactions(request: Request, env: Env, deps: Deps): Promise<Response> {
+  if (!env.DISCORD_PUBLIC_KEY) return json(500, { error: "instance has no DISCORD_PUBLIC_KEY" });
+  const text = await readLimitedText(request);
+  if (text instanceof Response) return text;
+  const signature = request.headers.get("X-Signature-Ed25519");
+  const timestamp = request.headers.get("X-Signature-Timestamp");
+  if (!(await verifyDiscordSignature(env.DISCORD_PUBLIC_KEY, signature, timestamp, text))) {
+    return json(401, { error: "invalid request signature" });
+  }
+  if (timestamp === null || !isFreshTimestamp(timestamp, deps.now())) return json(401, { error: "stale request timestamp" });
+  const raw = parseJson(text);
+  const type = interactionType(raw);
+  if (type === INTERACTION_PING) return Response.json({ type: RESPONSE_PONG });
+  if (type === INTERACTION_COMPONENT) return tap(raw, env, deps);
+  return json(400, { error: `unsupported interaction type ${type ?? "none"}` });
+}
+
+/**
+ * A button press (A5, A21, A27). Discord wants an answer within 3 s, so the tap is answered at
+ * once and the dispatch runs on in `waitUntil`; `settle` then records the outcome on the message.
+ * The signature binds the press to this application and the channel check binds it to the one
+ * channel the bot serves; the application id itself needs no check, since only the application's
+ * private key produces a signature its public key accepts.
+ */
+function tap(raw: unknown, env: Env, deps: Deps): Response {
+  const pressed = parseTap(raw);
+  if (!pressed) return json(400, { error: "not a button press on a request message" });
+  const bot = botClient(env);
+  if (bot instanceof Response) return bot;
+  const app = appCredentials(env);
+  if (app instanceof Response) return app;
+  if (pressed.channelId !== bot.channelId) return ephemeral("This message is not in the channel this instance serves.");
+  const verdict = tapVerdict(pressed, parseAllowedUsers(env.DISCORD_ALLOWED_USERS), deps.now());
+  if (verdict === "not allowed") return ephemeral("You are not on this instance's list of people who may answer.");
+  if (verdict === "already answered") return ephemeral("This request has already been answered.");
+  if (verdict === "expired") return updateMessage({ content: statusLine(pressed.repository, "expired: not answered within 7 days"), components: [] });
+  deps.waitUntil(settle(pressed, bot, app, deps));
+  if (pressed.action === "decline") {
+    return updateMessage({ content: statusLine(pressed.repository, `declined by <@${pressed.userId}>`), components: [] });
+  }
+  return Response.json({ type: RESPONSE_DEFERRED_UPDATE });
+}
+
+async function settle(pressed: Tap, bot: BotClient, app: AppCredentials, deps: Deps): Promise<void> {
+  const eventType = pressed.action === "approve" ? "nudge-approved" : "nudge-declined";
+  const payload = { id: pressed.messageId, commit: pressed.sha, actor: pressed.userId };
+  const outcome = await dispatchToRepository(app, pressed.repository, eventType, payload, deps.fetch, deps.now());
+  const patch = settlePatch(pressed, outcome);
+  // A failed edit is left to reject: the runtime logs it, and the buttons that stay invite a retry the consumer's guard tolerates.
+  if (patch) await editMessage(bot, pressed.messageId, patch, deps.fetch, deps.sleep);
+}
+
+function ephemeral(content: string): Response {
+  return Response.json({ type: RESPONSE_CHANNEL_MESSAGE, data: { content, flags: EPHEMERAL_FLAG, allowed_mentions: { parse: [] } } });
+}
+
+function updateMessage(patch: Omit<MessagePatch, "allowed_mentions">): Response {
+  return Response.json({ type: RESPONSE_UPDATE_MESSAGE, data: { ...patch, allowed_mentions: { parse: [] } } });
+}
+
 function botClient(env: Env): BotClient | Response {
   if (!env.DISCORD_BOT_TOKEN) return json(500, { error: "instance has no DISCORD_BOT_TOKEN" });
   if (!env.DISCORD_CHANNEL_ID) return json(500, { error: "instance has no DISCORD_CHANNEL_ID" });
   return { token: env.DISCORD_BOT_TOKEN, channelId: env.DISCORD_CHANNEL_ID };
+}
+
+function appCredentials(env: Env): AppCredentials | Response {
+  if (!env.GITHUB_APP_ID) return json(500, { error: "instance has no GITHUB_APP_ID" });
+  if (!env.GITHUB_APP_PRIVATE_KEY) return json(500, { error: "instance has no GITHUB_APP_PRIVATE_KEY" });
+  return { appId: env.GITHUB_APP_ID, privateKeyPem: env.GITHUB_APP_PRIVATE_KEY };
+}
+
+/** A verified workflow identity from an allowed owner, or the refusal to return. */
+async function authorize(request: Request, env: Env, deps: Deps): Promise<WorkflowIdentity | Response> {
+  const identity = await authenticate(request, env, deps);
+  if (identity instanceof Response) return identity;
+  if (!isAllowedOwner(identity.owner, parseAllowedOwners(env.ALLOWED_OWNERS))) {
+    return json(403, { error: `repository owner ${identity.owner} is not served by this instance` });
+  }
+  return identity;
 }
 
 async function authenticate(request: Request, env: Env, deps: Deps): Promise<WorkflowIdentity | Response> {
@@ -97,18 +224,29 @@ export function bearerToken(header: string | null): string | undefined {
 }
 
 async function readJsonBody(request: Request): Promise<{ json: unknown } | Response> {
-  const declared = Number(request.headers.get("Content-Length") ?? "0");
-  if (declared > MAX_BODY_BYTES) return json(413, { error: `body larger than ${MAX_BODY_BYTES} bytes` });
   if (!/^application\/json\b/i.test(request.headers.get("Content-Type") ?? "")) {
     return json(415, { error: "Content-Type must be application/json" });
   }
+  const text = await readLimitedText(request);
+  if (text instanceof Response) return text;
+  const parsed = parseJson(text);
+  return parsed === undefined ? json(400, { error: "body is not valid JSON" }) : { json: parsed };
+}
+
+async function readLimitedText(request: Request): Promise<string | Response> {
+  const tooLarge = (): Response => json(413, { error: `body larger than ${MAX_BODY_BYTES} bytes` });
+  if (Number(request.headers.get("Content-Length") ?? "0") > MAX_BODY_BYTES) return tooLarge();
   const text = await request.text();
-  if (text.length > MAX_BODY_BYTES) return json(413, { error: `body larger than ${MAX_BODY_BYTES} bytes` });
+  return text.length > MAX_BODY_BYTES ? tooLarge() : text;
+}
+
+/** Parsed JSON, or undefined when the text is not JSON (`undefined` itself is not a JSON value). */
+function parseJson(text: string): unknown {
   try {
-    const json: unknown = JSON.parse(text);
-    return { json };
+    const parsed: unknown = JSON.parse(text);
+    return parsed;
   } catch {
-    return json(400, { error: "body is not valid JSON" });
+    return undefined;
   }
 }
 
@@ -119,7 +257,12 @@ function json(status: number, body: { error: string }, headers: Record<string, s
   });
 }
 
-const live: Deps = {
+/** The part of Cloudflare's ExecutionContext this Worker uses. */
+interface Context {
+  waitUntil(work: Promise<unknown>): void;
+}
+
+const live: Omit<Deps, "waitUntil"> = {
   fetch: (input, init) => fetch(input, init),
   now: () => new Date(),
   jwks: createJwksSource((input, init) => fetch(input, init)),
@@ -127,7 +270,7 @@ const live: Deps = {
 };
 
 export default {
-  fetch(request: Request, env: Env): Promise<Response> {
-    return handle(request, env, live);
+  fetch(request: Request, env: Env, ctx: Context): Promise<Response> {
+    return handle(request, env, { ...live, waitUntil: (work) => ctx.waitUntil(work) });
   },
 };

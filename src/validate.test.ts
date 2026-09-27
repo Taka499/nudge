@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isHttpUrl, parseNotifyInput } from "./validate.ts";
+import { isHttpUrl, parseNotifyInput, parseRequestInput } from "./validate.ts";
 
 describe("parseNotifyInput", () => {
   test("accepts title and body, with and without url", () => {
@@ -46,5 +46,30 @@ describe("isHttpUrl", () => {
     expect(isHttpUrl("HTTPS://A.TEST")).toBe(true);
     expect(isHttpUrl("file:///etc/passwd")).toBe(false);
     expect(isHttpUrl("not a url")).toBe(false);
+  });
+});
+
+describe("parseRequestInput", () => {
+  const sha = "0123456789abcdef0123456789abcdef01234567";
+
+  test("needs everything notify needs plus a full lowercase sha, and takes an optional image URL", () => {
+    expect(parseRequestInput({ title: "t", body: "b", commit: sha })).toEqual({ ok: true, value: { title: "t", body: "b", commit: sha } });
+    expect(parseRequestInput({ title: "t", body: "b", url: "https://x.test/pr/1", commit: sha, image: "https://x.test/i.png" })).toEqual({
+      ok: true,
+      value: { title: "t", body: "b", url: "https://x.test/pr/1", commit: sha, image: "https://x.test/i.png" },
+    });
+  });
+
+  test("refuses a missing, short, uppercase or non-hex commit, and a non-URL image", () => {
+    for (const commit of [undefined, "abc123", sha.toUpperCase(), sha.replace("0", "g"), 42]) {
+      const result = parseRequestInput({ title: "t", body: "b", commit });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error).toContain("commit");
+    }
+    const image = parseRequestInput({ title: "t", body: "b", commit: sha, image: "ftp://x" });
+    expect(image.ok).toBe(false);
+    if (!image.ok) expect(image.error).toContain("image");
+    expect(parseRequestInput({ title: "", body: "b", commit: sha }).ok).toBe(false);
+    expect(parseRequestInput("nope").ok).toBe(false);
   });
 });
