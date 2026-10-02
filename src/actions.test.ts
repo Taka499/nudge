@@ -80,8 +80,17 @@ describe("actions/resolve", () => {
 });
 
 describe("actions/guard", () => {
-  const pulls = (entries: Array<{ number: number; state: string; sha: string }>): string =>
-    JSON.stringify(entries.map((e) => ({ number: e.number, state: e.state, head: { sha: e.sha } })));
+  interface Pull {
+    number: number;
+    state: string;
+    sha: string;
+    /** The head's repository; another one means a fork. */
+    repo?: string;
+    base?: string;
+    branch?: string;
+  }
+  const pulls = (entries: Pull[]): string =>
+    JSON.stringify(entries.map((e) => ({ number: e.number, state: e.state, base: { ref: e.base ?? "develop" }, head: { sha: e.sha, ref: e.branch ?? "auto/sync-data", repo: e.repo === "" ? null : { full_name: e.repo ?? "Taka499/ss-assist" } } })));
 
   test("outputs the one open pull request whose head is the commit, ignoring closed ones and other heads", async () => {
     const run = await runAction("guard", { commit: SHA }, { ghJson: pulls([{ number: 41, state: "closed", sha: SHA }, { number: 42, state: "open", sha: SHA }, { number: 43, state: "open", sha: "f".repeat(40) }]) });
@@ -89,6 +98,36 @@ describe("actions/guard", () => {
     expect(run.outputs).toEqual({ number: "42" });
     expect(run.gh[0]).toContain(`repos/Taka499/ss-assist/commits/${SHA}/pulls`);
     expect(run.gh[0]).toContain("--paginate");
+    expect(run.gh[0]).not.toContain("--jq");
+  });
+
+  test("never matches a pull request whose head lives in another repository, even at the same commit (#14)", async () => {
+    const fork = await runAction("guard", { commit: SHA }, { ghJson: pulls([{ number: 42, state: "open", sha: SHA, repo: "stranger/ss-assist" }]) });
+    expect(fork.code).toBe(1);
+    expect(fork.outputs).toEqual({ stale: "true" });
+    const deleted = await runAction("guard", { commit: SHA }, { ghJson: pulls([{ number: 42, state: "open", sha: SHA, repo: "" }]) });
+    expect(deleted.code).toBe(1);
+    const mixed = await runAction("guard", { commit: SHA }, { ghJson: pulls([{ number: 42, state: "open", sha: SHA, repo: "stranger/ss-assist" }, { number: 43, state: "open", sha: SHA }]) });
+    expect(mixed.code).toBe(0);
+    expect(mixed.outputs).toEqual({ number: "43" });
+  });
+
+  test("binds the match to the consumer's base and head branches when given (#14)", async () => {
+    const two = [{ number: 42, state: "open", sha: SHA, base: "main", branch: "hotfix" }, { number: 43, state: "open", sha: SHA, base: "develop", branch: "auto/sync-data" }];
+    const unbound = await runAction("guard", { commit: SHA }, { ghJson: pulls(two) });
+    expect(unbound.code).toBe(1);
+    expect(unbound.stderr).toContain("found 2");
+    const byBase = await runAction("guard", { commit: SHA, base: "develop" }, { ghJson: pulls(two) });
+    expect(byBase.outputs).toEqual({ number: "43" });
+    const byHead = await runAction("guard", { commit: SHA, head: "hotfix" }, { ghJson: pulls(two) });
+    expect(byHead.outputs).toEqual({ number: "42" });
+    const neither = await runAction("guard", { commit: SHA, base: "release" }, { ghJson: pulls(two) });
+    expect(neither.code).toBe(1);
+    expect(neither.outputs).toEqual({ stale: "true" });
+    expect(neither.stderr).toContain("into release");
+    const hostile = await runAction("guard", { commit: SHA, base: 'develop" or true or "' }, { ghJson: pulls(two) });
+    expect(hostile.code).toBe(1);
+    expect(hostile.outputs).toEqual({ stale: "true" });
   });
 
   test("fails when no open pull request has that head, when two do, or when the commit is not a full sha", async () => {

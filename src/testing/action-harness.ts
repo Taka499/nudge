@@ -114,7 +114,7 @@ printf '%s' "$NUDGE_FAKE_STATUS"
 printf 'gh\\0' >> "$NUDGE_LOG"; printf '%s\\0' "$@" >> "$NUDGE_LOG"; printf 'GH_TOKEN=%s\\0' "\${GH_TOKEN:-}" >> "$NUDGE_LOG"; printf '${RECORD}' >> "$NUDGE_LOG"
 if [ -n "$NUDGE_FAKE_GH_FAIL" ]; then echo "gh: HTTP 503" >&2; exit 1; fi
 filter="."; prev=""; for a in "$@"; do if [ "$prev" = "--jq" ]; then filter="$a"; fi; prev="$a"; done
-jq -r "$filter" <<<"$NUDGE_FAKE_GH_JSON"
+jq -r "$filter" <<<"$NUDGE_FAKE_GH_JSON"   # with no --jq this is the raw JSON, as gh api prints it
 `;
   await Bun.write(`${dir}/bin/curl`, curl);
   await Bun.write(`${dir}/bin/gh`, gh);

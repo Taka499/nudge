@@ -75,7 +75,7 @@ A `request` is a message with Approve and Decline buttons. It names the exact co
           image: ${{ needs.sync.outputs.icon-url }} # optional
 ```
 
-A tap sends a `repository_dispatch` to the repository with `event_type` `nudge-approved` or `nudge-declined` and `client_payload` `{ id, commit, actor }`. The repository's own committed workflow does the work; Nudge never merges (`docs/adr/0001`). The handler runs in a fresh workflow run, possibly days later, so it starts with `guard`, which finds the one open pull request whose head is still that commit and stops otherwise, with its `stale` output set; a lookup that failed for another reason (GitHub down) stops without it, so the report says `failed`, not `stale`. It merges with `--match-head-commit`, which makes GitHub refuse if the head moved in between, and it reports back with `resolve` on every exit path, in a job of its own with only `id-token: write`:
+A tap sends a `repository_dispatch` to the repository with `event_type` `nudge-approved` or `nudge-declined` and `client_payload` `{ id, commit, actor }`. The repository's own committed workflow does the work; Nudge never merges (`docs/adr/0001`). The handler runs in a fresh workflow run, possibly days later, so it starts with `guard`, which finds the one open pull request of this repository whose head is still that commit and stops otherwise, with its `stale` output set; a lookup that failed for another reason (GitHub down) stops without it, so the report says `failed`, not `stale`. A pull request from a fork never matches, and `base` and `head` bind the match to the branches your flow uses, so that a stranger's pull request at the same public commit can never become "the one" once yours is closed. It merges with `--match-head-commit`, which makes GitHub refuse if the head moved in between, and it reports back with `resolve` on every exit path, in a job of its own with only `id-token: write`:
 
 ```yaml
 name: Approved from Discord
@@ -99,9 +99,12 @@ jobs:
         uses: Taka499/nudge/actions/guard@d9f7f1ac185050506d526532a0e24861564422cf # v1.1.0
         with:
           commit: ${{ github.event.client_payload.commit }}
+          base: develop                            # optional: YOUR base branch; only a pull request into it counts
+          head: auto/sync-data                     # optional: YOUR head branch; only a pull request from it counts
       - run: gh pr merge "$NUMBER" --merge --match-head-commit "$COMMIT"
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}       # gh needs the repository: the job has no checkout
           NUMBER: ${{ steps.guard.outputs.pull-request }}
           COMMIT: ${{ github.event.client_payload.commit }}
 
@@ -122,11 +125,13 @@ jobs:
 
 `resolve` is the repository's final word, not proof that a tap happened: it is what the message shows from then on, and it removes the buttons. A `nudge-declined` handler is optional; the message already says who declined.
 
+If your handler still pins `guard` at `v1.1.0`: that version matched any open pull request at the commit, from any repository and into any branch. Add a step after it that checks the pull request's base, head and that it is not from a fork (`gh pr view "$NUMBER" --json baseRefName,headRefName,isCrossRepository`) until you move the pin to a version with the `base` and `head` inputs.
+
 The three actions:
 
     actions/request   inputs: endpoint, title, body, url?, commit, image?      outputs: id
     actions/resolve   inputs: endpoint, id, outcome (done | failed | stale), detail?
-    actions/guard     inputs: commit, token?                                    outputs: pull-request, stale
+    actions/guard     inputs: commit, base?, head?, token?                      outputs: pull-request, stale
 
 Every action's bash step runs against faked `curl` and `gh` in `src/actions.test.ts`, so the audience, path, body and accepted status are pinned by tests.
 
