@@ -22,7 +22,7 @@ jobs:
     permissions:
       id-token: write                            # nothing else: no secrets, no environment
     steps:
-      - uses: Taka499/nudge/actions/notify@d9f7f1ac185050506d526532a0e24861564422cf # v1.1.0
+      - uses: Taka499/nudge/actions/notify@792cf13fdc57244eba070e459ef8285e27aeb2fc # v1.2.0
         with:
           endpoint: https://nudge.tia.run          # your instance
           title: "Weekly update: ${{ needs.update.result }}"
@@ -65,7 +65,7 @@ A `request` is a message with Approve and Decline buttons. It names the exact co
     permissions:
       id-token: write
     steps:
-      - uses: Taka499/nudge/actions/request@d9f7f1ac185050506d526532a0e24861564422cf # v1.1.0
+      - uses: Taka499/nudge/actions/request@792cf13fdc57244eba070e459ef8285e27aeb2fc # v1.2.0
         with:
           endpoint: https://nudge.tia.run          # your instance
           title: "New character: ${{ needs.sync.outputs.name }}"
@@ -96,7 +96,7 @@ jobs:
       number: ${{ steps.guard.outputs.pull-request }}
     steps:
       - id: guard
-        uses: Taka499/nudge/actions/guard@d9f7f1ac185050506d526532a0e24861564422cf # v1.1.0
+        uses: Taka499/nudge/actions/guard@792cf13fdc57244eba070e459ef8285e27aeb2fc # v1.2.0
         with:
           commit: ${{ github.event.client_payload.commit }}
           base: develop                            # optional: YOUR base branch; only a pull request into it counts
@@ -115,7 +115,7 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: Taka499/nudge/actions/resolve@d9f7f1ac185050506d526532a0e24861564422cf # v1.1.0
+      - uses: Taka499/nudge/actions/resolve@792cf13fdc57244eba070e459ef8285e27aeb2fc # v1.2.0
         with:
           endpoint: https://nudge.tia.run
           id: ${{ github.event.client_payload.id }}
