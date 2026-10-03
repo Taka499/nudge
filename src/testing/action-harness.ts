@@ -1,6 +1,7 @@
 /**
  * Test-only: runs a composite action's bash step the way GitHub would, with `curl` and `gh`
- * replaced by fakes on PATH that record what they were asked and answer what the test says.
+ * replaced by fakes on PATH that record what they were asked and answer what the test says, and
+ * `date` replaced too when the test fixes the clock.
  * Nothing touches the network. Each fake appends one record per call to a log: the arguments,
  * NUL-separated, then a record separator.
  */
@@ -30,6 +31,13 @@ export interface Fakes {
   noIdToken?: boolean;
   /** The fake gh exits 1 without output, as it would when GitHub is unreachable or the token is bad. */
   ghFails?: boolean;
+  /**
+   * What the fake curl answers to a call to api.cloudflare.com: HTTP status and response body, and
+   * the exit code, non-zero for a transport failure (curl then prints status 000).
+   */
+  cloudflare?: { status: string; body: string; exit?: number };
+  /** Fixes the clock: the fake `date` prints these seconds since the epoch. */
+  now?: number;
 }
 
 const TOKEN_URL = "https://token.actions.test/oidc";
@@ -52,11 +60,9 @@ export async function runAction(name: string, inputs: Record<string, string>, fa
     ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runner-token",
     NUDGE_LOG: `${dir}/log`,
     NUDGE_TOKEN_URL: TOKEN_URL,
-    NUDGE_FAKE_STATUS: fakes.status ?? "204",
-    NUDGE_FAKE_BODY: fakes.body ?? "",
-    NUDGE_FAKE_GH_JSON: fakes.ghJson ?? "[]",
-    NUDGE_FAKE_GH_FAIL: fakes.ghFails ? "1" : "",
+    ...fakeAnswers(fakes),
   };
+  if (fakes.now !== undefined) await writeFakeDate(dir, fakes.now);
   if (!fakes.noIdToken) env["ACTIONS_ID_TOKEN_REQUEST_URL"] = TOKEN_URL;
   const proc = Bun.spawn(["bash", "-c", step.run], { env, stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
@@ -68,6 +74,19 @@ export async function runAction(name: string, inputs: Record<string, string>, fa
     curl: calls.filter((c) => c[0] === "curl").map((c) => c.slice(1)),
     gh: calls.filter((c) => c[0] === "gh").map((c) => c.slice(1)),
     outputs: parseOutputs(await Bun.file(outputFile).text()),
+  };
+}
+
+/** What the fakes answer, as the environment they read it from. */
+function fakeAnswers(fakes: Fakes): Record<string, string> {
+  return {
+    NUDGE_FAKE_STATUS: fakes.status ?? "204",
+    NUDGE_FAKE_BODY: fakes.body ?? "",
+    NUDGE_FAKE_GH_JSON: fakes.ghJson ?? "[]",
+    NUDGE_FAKE_GH_FAIL: fakes.ghFails ? "1" : "",
+    NUDGE_FAKE_CF_STATUS: fakes.cloudflare?.status ?? "200",
+    NUDGE_FAKE_CF_BODY: fakes.cloudflare?.body ?? "",
+    NUDGE_FAKE_CF_EXIT: String(fakes.cloudflare?.exit ?? 0),
   };
 }
 
@@ -91,7 +110,7 @@ function stepEnv(step: Step, doc: unknown, inputs: Record<string, string>): Reco
   const declared = record(record(doc)["inputs"]);
   const env: Record<string, string> = {};
   for (const [key, expression] of Object.entries(step.env)) {
-    env[key] = expression.replace(/\$\{\{\s*([\w.]+)\s*\}\}/g, (_match, path: string) => {
+    env[key] = expression.replace(/\$\{\{\s*([\w.-]+)\s*\}\}/g, (_match, path: string) => {
       if (path === "github.token") return "github-token";
       const name = path.replace(/^inputs\./, "");
       const fallback = record(declared[name])["default"];
@@ -106,9 +125,12 @@ async function writeFakes(dir: string): Promise<void> {
   const curl = `#!/bin/bash
 ${log}
 for a in "$@"; do case "$a" in "$NUDGE_TOKEN_URL") echo '{"value":"oidc.token"}'; exit 0;; esac; done
+status="$NUDGE_FAKE_STATUS"; body="$NUDGE_FAKE_BODY"; code=0
+for a in "$@"; do case "$a" in https://api.cloudflare.com/*) status="$NUDGE_FAKE_CF_STATUS"; body="$NUDGE_FAKE_CF_BODY"; code="$NUDGE_FAKE_CF_EXIT";; esac; done
 out=""; prev=""; for a in "$@"; do if [ "$prev" = "-o" ]; then out="$a"; fi; prev="$a"; done
-if [ -n "$out" ]; then printf '%s' "$NUDGE_FAKE_BODY" > "$out"; fi
-printf '%s' "$NUDGE_FAKE_STATUS"
+if [ -n "$out" ]; then printf '%s' "$body" > "$out"; fi
+printf '%s' "$status"
+exit "$code"
 `;
   const gh = `#!/bin/bash
 printf 'gh\\0' >> "$NUDGE_LOG"; printf '%s\\0' "$@" >> "$NUDGE_LOG"; printf 'GH_TOKEN=%s\\0' "\${GH_TOKEN:-}" >> "$NUDGE_LOG"; printf '${RECORD}' >> "$NUDGE_LOG"
@@ -119,6 +141,13 @@ jq -r "$filter" <<<"$NUDGE_FAKE_GH_JSON"   # with no --jq this is the raw JSON, 
   await Bun.write(`${dir}/bin/curl`, curl);
   await Bun.write(`${dir}/bin/gh`, gh);
   await Bun.$`chmod +x ${dir}/bin/curl ${dir}/bin/gh`.quiet();
+}
+
+/** A `date` that answers `date -u +%s` with the fixed time and refuses anything else, so a new use shows. */
+async function writeFakeDate(dir: string, now: number): Promise<void> {
+  const script = `#!/bin/bash\nif [ "$*" = "-u +%s" ]; then echo ${Math.floor(now)}; else echo "fake date: unexpected $*" >&2; exit 1; fi\n`;
+  await Bun.write(`${dir}/bin/date`, script);
+  await Bun.$`chmod +x ${dir}/bin/date`.quiet();
 }
 
 async function readLog(path: string): Promise<string[][]> {

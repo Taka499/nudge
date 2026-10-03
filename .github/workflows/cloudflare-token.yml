@@ -1,0 +1,34 @@
+# Guards: this repository's own Cloudflare deploy token, the CLOUDFLARE_API_TOKEN that deploy.yml uses
+# (docs/plans/EXECPLAN_NUDGE.md decision A30, item 7). Weekly, actions/cloudflare-token warns in Discord
+# within 30 days of the token's expiry, reports a token Cloudflare refuses (and fails), and posts one OK
+# line in the first week of each month: a month without that line means GitHub disabled this schedule,
+# which it does in a public repository after 60 days without activity. The Worker runs on its own
+# secrets and needs this token only to deploy, so the warning does not depend on the token it warns
+# about. The instance origin is the repository variable NUDGE_ENDPOINT, not a value in this file
+# (docs/adr/0004); without it the job is skipped, so a fork that has not set it runs nothing.
+name: Cloudflare token
+
+on:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC: off the hour, when GitHub delays and drops scheduled runs
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    if: vars.NUDGE_ENDPOINT != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The checked-out commit's own action, so this repository always runs the code it ships.
+      - uses: ./actions/cloudflare-token
+        with:
+          endpoint: ${{ vars.NUDGE_ENDPOINT }}
+          token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

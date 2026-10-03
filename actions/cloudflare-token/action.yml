@@ -1,0 +1,120 @@
+# Warns before a Cloudflare API token expires (plan decisions A6, A29, A30). Run it weekly from a
+# scheduled job in the repository that owns the token: the token goes only to Cloudflare's verify
+# endpoint, never to Nudge. The step then posts through the Nudge instance, as actions/notify does:
+#
+# - an active token that expires within 30 days: a warning naming the date, on every run;
+# - Cloudflare answers that the token is not usable (refused, expired, disabled):
+#   "Cloudflare rejected the token" with Cloudflare's reason, and the job fails;
+# - Cloudflare cannot be asked, or its answer cannot be read (no answer, a failed transfer, a 408, 429
+#   or 5xx, unexpected JSON, a date this step cannot parse):
+#   "Cloudflare token check failed", and the job fails; the token may be fine;
+# - otherwise nothing, except one "token OK" line in the first week (UTC day 1-7) of a month, so a
+#   month without that line shows that the schedule stopped.
+#
+# The calling job needs `permissions: id-token: write` (docs/adr/0002). Give `account-id` for an
+# account-owned token, which Cloudflare verifies under the account; without it the user endpoint
+# is used.
+name: Nudge Cloudflare token check
+description: Warn in Discord, through a Nudge instance, before a Cloudflare API token expires
+inputs:
+  endpoint:
+    description: Origin of the Nudge instance, e.g. https://nudge.example.com
+    required: true
+  token:
+    description: The Cloudflare API token to check, from a repository secret
+    required: true
+  account-id:
+    description: The Cloudflare account id, for an account-owned token; empty for a user token
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Check the Cloudflare token
+      shell: bash
+      env:
+        ENDPOINT: ${{ inputs.endpoint }}
+        CF_TOKEN: ${{ inputs.token }}
+        ACCOUNT_ID: ${{ inputs.account-id }}
+      run: |
+        set -euo pipefail
+        if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+          echo "::error::the job needs 'permissions: id-token: write' to call Nudge" >&2
+          exit 1
+        fi
+        if [ -z "$CF_TOKEN" ]; then
+          echo "::error::the token input is empty; pass the repository secret that holds the Cloudflare API token" >&2
+          exit 1
+        fi
+        api="https://api.cloudflare.com/client/v4"
+        case "$ACCOUNT_ID" in
+          "") verify="$api/user/tokens/verify" ;;
+          *) verify="$api/accounts/$ACCOUNT_ID/tokens/verify" ;;
+        esac
+        if [ -n "$ACCOUNT_ID" ] && ! [[ "$ACCOUNT_ID" =~ ^[0-9a-fA-F]{32}$ ]]; then
+          echo "::error::account-id must be the 32-character hexadecimal Cloudflare account id" >&2
+          exit 1
+        fi
+        answer="$RUNNER_TEMP/cloudflare-verify"
+        : > "$answer"
+        curl_exit=0
+        http="$(curl -sS -o "$answer" -w '%{http_code}' -H "Authorization: Bearer $CF_TOKEN" "$verify")" || curl_exit=$?
+        now="$(date -u +%s)"
+        verdict="$(jq -cn --rawfile raw "$answer" --arg http "${http:-000}" --arg curl "$curl_exit" --argjson now "$now" '
+          ($raw | try fromjson catch null) as $r
+          | ($now | todate[8:10] | tonumber) as $day
+          | def rejected($why): {kind: "rejected", title: "Cloudflare rejected the token",
+              body: "\($why). Deploys that use this token fail until the repository secret holds a working token."};
+            def unchecked($why): {kind: "unchecked", title: "Cloudflare token check failed",
+              body: "\($why). The token may still work; the next run checks again."};
+            def ok($what): if $day <= 7 then {kind: "ok", title: "Cloudflare token OK",
+              body: "\($what) This line posts once a month; a month without it means this scheduled check has stopped."}
+              else {kind: "quiet", log: $what} end;
+            def messages: [$r.errors | arrays | .[] | objects | .message | strings];
+            def expiring($at):
+              ($at - $now) as $left | (($left / 86400) | floor) as $days | ($at | todate[0:10]) as $date
+              | if $left > 30 * 86400 then ok("It expires on \($date) (UTC), in \($days) days.")
+                else {kind: "warn",
+                  title: (if $days < 0 then "Cloudflare token expired" elif $days == 0 then "Cloudflare token expires today"
+                          elif $days == 1 then "Cloudflare token expires in 1 day" else "Cloudflare token expires in \($days) days" end),
+                  body: "The Cloudflare API token checked by this workflow expires on \($date) (UTC). Create a new token and replace the repository secret before then."}
+                end;
+            def verdict:
+              if $curl != "0" then unchecked("Cloudflare could not be asked: curl exit \($curl), HTTP \($http)")
+              elif $http == "000" or $http == "408" or $http == "429" or ($http | startswith("5")) or ($r | type) != "object" then
+                unchecked("Cloudflare could not be asked: HTTP \($http)" + (if ($r | type) != "object" then ", no JSON answer" else "" end))
+              elif $http != "200" or $r.success != true then
+                rejected("HTTP \($http)" + (if (messages | length) > 0 then ": \(messages | join("; "))" else "" end))
+              elif ($r.result | type) != "object" then unchecked("Cloudflare answered without the token details")
+              elif $r.result.status != "active" then rejected("HTTP 200, token status \($r.result.status | tostring)")
+              elif ($r.result.expires_on // "") == "" then ok("The token has no expiry date.")
+              else ($r.result.expires_on | tostring | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch null) as $at
+                | if $at == null then unchecked("Cloudflare gave an expiry date this check cannot read: \($r.result.expires_on)")
+                  else expiring($at) end
+              end;
+          verdict')"
+        kind="$(jq -r .kind <<<"$verdict")"
+        if [ "$kind" = "quiet" ]; then
+          echo "$(jq -r .log <<<"$verdict") Nothing to post."
+          exit 0
+        fi
+        endpoint="${ENDPOINT%/}"
+        token="$(curl -sSf -G "$ACTIONS_ID_TOKEN_REQUEST_URL" \
+          -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          --data-urlencode "audience=$endpoint" | jq -r .value)"
+        status="$(curl -sS -o "$RUNNER_TEMP/nudge-response" -w '%{http_code}' \
+          -X POST "$endpoint/notify" \
+          -H "Authorization: Bearer $token" \
+          -H "Content-Type: application/json" \
+          --data "$(jq -c '{title, body}' <<<"$verdict")")"
+        if [ "$status" != "204" ]; then
+          echo "::error::Nudge answered $status: $(cat "$RUNNER_TEMP/nudge-response")" >&2
+          exit 1
+        fi
+        if [ "$kind" = "rejected" ] || [ "$kind" = "unchecked" ]; then
+          echo "::error::$(jq -r .body <<<"$verdict")" >&2
+          exit 1
+        fi
+        if [ "$kind" = "warn" ]; then
+          echo "::warning::$(jq -r .title <<<"$verdict")"
+        fi

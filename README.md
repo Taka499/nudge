@@ -1,6 +1,6 @@
 # Nudge
 
-Nudge lets a GitHub Actions workflow post to a private Discord channel with no secret stored in the repository: a plain notification (`notify`), and a question with Approve and Decline buttons (`request`) whose outcome the repository reports back (`resolve`). A tap on Approve sends a `repository_dispatch` to the repository, and the repository's own committed workflow acts. Nudge never merges, deploys or edits anything itself (`docs/adr/0001`).
+Nudge lets a GitHub Actions workflow post to a private Discord channel with no secret stored in the repository: a plain notification (`notify`), and a question with Approve and Decline buttons (`request`) whose outcome the repository reports back (`resolve`). A tap on Approve sends a `repository_dispatch` to the repository, and the repository's own committed workflow acts. Nudge never merges, deploys or edits anything itself (`docs/adr/0001`). A fourth action warns before a Cloudflare API token expires (`cloudflare-token`).
 
 It is a small Cloudflare Worker plus the GitHub Actions that call it. Nudge is a **self-hosted template**: you deploy your own Worker from this repository, and your repositories talk to your instance. `https://nudge.tia.run` is the author's instance and serves only the author's repositories. Setting up an instance takes about half an hour: `docs/SETUP.md`.
 
@@ -135,6 +135,47 @@ The three actions:
 
 Every action's bash step runs against faked `curl` and `gh` in `src/actions.test.ts`, so the audience, path, body and accepted status are pinned by tests.
 
+## Warn before a Cloudflare token expires
+
+A deploy token with an expiry date stops working on that date, and a deploy that runs once a week finds out too late. `actions/cloudflare-token` checks the token once a week from a scheduled job in the repository that owns it. The token goes only to Cloudflare's verify endpoint, never to Nudge (plan decisions A29, A30):
+
+```yaml
+# .github/workflows/cloudflare-token.yml
+on:
+  schedule:
+    - cron: "17 3 * * 1"                         # weekly; off the hour, when GitHub delays scheduled runs
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - uses: Taka499/nudge/actions/cloudflare-token@ae2116bc8fd8229c5d30c495d7c89e5f05617c99 # v1.3.0
+        with:
+          endpoint: https://nudge.tia.run          # your instance
+          token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}   # for an account-owned token; omit for a user token
+```
+
+What it posts:
+
+| Cloudflare's answer | Message | Job |
+|---|---|---|
+| active, expires in 30 days or less | "Cloudflare token expires in N days" with the date, every week | green |
+| refused, expired or disabled | "Cloudflare rejected the token" with Cloudflare's reason | fails |
+| no answer, a failed transfer, 408, 429 or 5xx, or an answer it cannot read | "Cloudflare token check failed"; the token may be fine | fails |
+| active, more than 30 days left or no expiry date | "Cloudflare token OK" once, in the first week (UTC day 1–7) of each month; otherwise nothing | green |
+
+The monthly OK line is there because silence is ambiguous. GitHub disables scheduled workflows in a public repository after 60 days without activity, so a month without the line means the check stopped: re-enable it under Actions. If the instance cannot be reached the job fails, and GitHub's own failure notification goes to whoever last changed the `cron` line.
+
+    actions/cloudflare-token   inputs: endpoint, token, account-id?
+
+Its bash step runs against faked `curl` and `date` in `src/actions.cloudflare-token.test.ts`.
+
 ## HTTP contract
 
 Every request is `POST` with `Content-Type: application/json` and `Authorization: Bearer <GitHub OIDC token>`. The token's audience must be the instance origin, for example `https://nudge.tia.run`; the action does this for you.
@@ -176,4 +217,4 @@ bun run lint           # Oxlint + tsgolint: size, complexity and type-escape rul
 bun run deploy:check   # wrangler dry run: builds the Worker without an account
 ```
 
-Layout: `src/oidc.ts` verifies tokens, `src/jwks.ts` caches GitHub's keys, `src/gate.ts` is the owner allowlist, `src/validate.ts` checks bodies, `src/discord.ts` builds messages and posts and edits them through the bot, `src/interactions.ts` verifies and reads button presses, `src/github-app.ts` signs the App JWT and sends the dispatch, `src/worker.ts` routes. `actions/` holds the composite actions consumers call, each run for real against faked `curl` and `gh` by `src/actions.test.ts`. `.dev.vars.example` lists the instance values, which are Worker secrets loaded from a gitignored copy (`docs/adr/0004`); `wrangler.toml` names no tenant. Design, milestones and every decision: `docs/plans/EXECPLAN_NUDGE.md`.
+Layout: `src/oidc.ts` verifies tokens, `src/jwks.ts` caches GitHub's keys, `src/gate.ts` is the owner allowlist, `src/validate.ts` checks bodies, `src/discord.ts` builds messages and posts and edits them through the bot, `src/interactions.ts` verifies and reads button presses, `src/github-app.ts` signs the App JWT and sends the dispatch, `src/worker.ts` routes. `actions/` holds the composite actions consumers call, each run for real against faked `curl` and `gh` by `src/actions.test.ts` and `src/actions.cloudflare-token.test.ts`. `.dev.vars.example` lists the instance values, which are Worker secrets loaded from a gitignored copy (`docs/adr/0004`); `wrangler.toml` names no tenant. Design, milestones and every decision: `docs/plans/EXECPLAN_NUDGE.md`.
