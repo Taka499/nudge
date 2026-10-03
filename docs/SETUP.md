@@ -99,3 +99,11 @@ Run Acceptance again with that URL as `second_endpoint`. The second instance mus
 **The endpoint.** Once the Worker is deployed with those values, back in the Discord application's General Information set Interactions Endpoint URL to `https://<your hostname>/interactions` and save. Discord sends a signed PING at that moment and refuses to save unless the instance answers it. From then on a tap reaches the Worker. Discord also removes an endpoint that accepts a bad signature, which this one never does.
 
 **Then, in each repository**, the `request` step and the dispatch handler from `README.md` § Ask for an approval. The first real request proves the path end to end: tap Approve, watch the handler run, and see the message change to "done".
+
+## 9. Watch the deploy token's expiry
+
+The token of step 3 can carry an expiry date, and the deploys of step 5 stop working on that date. `.github/workflows/cloudflare-token.yml` checks it every Monday with `actions/cloudflare-token` (plan decisions A29, A30): a warning in your channel within 30 days of the date, "Cloudflare rejected the token" (and a failed run) when Cloudflare refuses it, "Cloudflare token check failed" (and a failed run) when Cloudflare cannot be asked, and otherwise one "Cloudflare token OK" line in the first week of each month. The Worker runs on its secrets and needs this token only to deploy, so the warning arrives even after the token has expired.
+
+To turn it on, add the repository variable `NUDGE_ENDPOINT` (Settings → Secrets and variables → Actions → Variables) with your instance origin, for example `https://nudge.example.com`. It reads the secrets `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` from step 5; with the account id it verifies an account-owned token where Cloudflare expects it. Until the variable exists the workflow skips, so a fork that has not set it runs nothing. Check it once by hand: Actions → Cloudflare token → Run workflow. In the first week of a month the OK line appears; later in the month the run logs the date and posts nothing.
+
+GitHub disables scheduled workflows in a public repository after 60 days without activity. If a month passes without the OK line, open Actions → Cloudflare token and enable the workflow again. Other repositories with a Cloudflare token use the same action: `README.md` § Warn before a Cloudflare token expires.
